@@ -1,3 +1,9 @@
+//! # Network Module
+//!
+//! Async TCP client for Stratum pool communication using tokio.
+//!
+//! Provides a simple line-based JSON streaming interface for the Stratum protocol.
+
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::net::{tcp::{OwnedReadHalf, OwnedWriteHalf}, TcpStream};

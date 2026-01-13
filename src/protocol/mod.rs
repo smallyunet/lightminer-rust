@@ -1,3 +1,27 @@
+//! # Protocol Module
+//!
+//! Stratum V1 protocol implementation for mining pool communication.
+//!
+//! ## Overview
+//!
+//! This module implements the JSON-RPC 2.0 based Stratum V1 protocol used for
+//! communication between miners and mining pools.
+//!
+//! ## Message Types
+//!
+//! - [`Request`] - Client-to-server requests (subscribe, authorize, submit)
+//! - [`Response`] - Server-to-client responses
+//! - [`Notification`] - Server-to-client notifications (set_difficulty, notify)
+//!
+//! ## Example
+//!
+//! ```rust
+//! use lightminer_rust::protocol::Request;
+//!
+//! let subscribe = Request::subscribe(1, "LightMiner/0.1");
+//! let authorize = Request::authorize(2, "worker.1", "password");
+//! ```
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -58,6 +82,7 @@ impl Request {
         }
     }
 
+    /// Create a mining.subscribe request
     pub fn subscribe(id: u64, agent: &str) -> Self {
         Self::new(
             id,
@@ -66,6 +91,7 @@ impl Request {
         )
     }
 
+    /// Create a mining.authorize request
     pub fn authorize(id: u64, worker_name: &str, password: &str) -> Self {
         Self::new(
             id,
@@ -195,6 +221,7 @@ pub fn parse_message(json_line: &str) -> Result<MessageType, serde_json::Error> 
     }
 }
 
+/// Enum representing different message types from the pool
 #[derive(Debug)]
 pub enum MessageType {
     Response(Response),

@@ -1,3 +1,14 @@
+//! # Miner Module
+//!
+//! CPU mining implementation with SHA256d hashing and nonce search.
+//!
+//! ## Features
+//!
+//! - SHA256d (double SHA256) hashing
+//! - Difficulty target calculation
+//! - Multi-threaded worker with job dispatch
+//! - Nonce iteration and valid share detection
+
 mod job;
 
 use crate::manager::Metrics;
