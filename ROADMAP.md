@@ -32,3 +32,10 @@
 - [x] **UI**: Design a dashboard with sections: Connection Status, Hashrate, Shares, Recent Logs.
 - [x] **Manager**: Separate log output from UI rendering (TUI vs NO_TUI mode).
 - [x] **Deliverable**: A polished TUI miner with dual-mode support.
+
+## Release v0.0.2: Functional TUI + Config + Shutdown
+**Goal:** Make the default TUI mode fully functional and configurable for everyday use.
+- [x] **TUI Integration**: Run the Manager in TUI mode and stream status/logs into the dashboard.
+- [x] **Config**: Support `MINING_USER`, `MINING_PASS`, and `MINING_AGENT` environment variables.
+- [x] **Shutdown**: Graceful shutdown on `Q/Esc` and Ctrl-C.
+- [x] **Correctness**: Track share accept/reject only for actual `mining.submit` responses.

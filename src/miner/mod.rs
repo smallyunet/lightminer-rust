@@ -165,7 +165,7 @@ fn mine_job(
     let mut extranonce2_counter: u64 = 0;
 
     // Build block header template
-    let header_template = match job::build_header_template(job, extranonce1) {
+    let header_template = match job::build_header_template(job) {
         Ok(h) => h,
         Err(e) => {
             tracing::error!("Failed to build header template: {}", e);

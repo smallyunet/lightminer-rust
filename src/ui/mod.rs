@@ -3,7 +3,7 @@
 mod state;
 mod widgets;
 
-use crate::manager::{ManagerState, Metrics};
+use crate::manager::{ManagerEvent, Metrics};
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -15,15 +15,79 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame, Terminal,
 };
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 pub use state::AppState;
+
+pub async fn run_state_updater(
+    app_state: Arc<tokio::sync::RwLock<AppState>>,
+    metrics: Arc<Metrics>,
+    mut event_rx: mpsc::Receiver<ManagerEvent>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_millis(250));
+
+    loop {
+        tokio::select! {
+            shutdown_result = shutdown_rx.changed() => {
+                match shutdown_result {
+                    Ok(()) => {
+                        if *shutdown_rx.borrow() {
+                            break;
+                        } else {
+                            continue;
+                        }
+                    }
+                    Err(_) => {
+                        break;
+                    }
+                }
+            }
+            _ = interval.tick() => {
+                let mut state = app_state.write().await;
+                state.update_from_metrics(&metrics);
+            }
+            maybe_event = event_rx.recv() => {
+                if let Some(event) = maybe_event {
+                    let mut state = app_state.write().await;
+                    apply_manager_event(&mut state, event);
+                    state.update_from_metrics(&metrics);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn apply_manager_event(state: &mut AppState, event: ManagerEvent) {
+    match event {
+        ManagerEvent::Log(message) => {
+            state.add_log(message);
+        }
+        ManagerEvent::Connected(is_connected) => {
+            state.connected = is_connected;
+        }
+        ManagerEvent::Difficulty(difficulty) => {
+            state.difficulty = difficulty;
+        }
+        ManagerEvent::CurrentJob(job_id) => {
+            state.current_job = job_id;
+        }
+        ManagerEvent::ShareAccepted => {
+            // Metrics owns the canonical counters.
+        }
+        ManagerEvent::ShareRejected => {
+            // Metrics owns the canonical counters.
+        }
+    }
+}
 
 /// Initialize the terminal for TUI
 pub fn init_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
@@ -117,6 +181,13 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
             Span::styled(
                 format!("{:.4}", app_state.difficulty),
                 Style::default().fg(Color::Magenta),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  Job: "),
+            Span::styled(
+                app_state.current_job.clone().unwrap_or_else(|| "-".to_string()),
+                Style::default().fg(Color::Yellow),
             ),
         ]),
     ];
@@ -246,7 +317,7 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
 pub async fn run_ui(
     mut terminal: Terminal<CrosstermBackend<io::Stdout>>,
     app_state: Arc<tokio::sync::RwLock<AppState>>,
-    mut shutdown_rx: mpsc::Receiver<()>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
         // Draw UI
@@ -273,9 +344,22 @@ pub async fn run_ui(
             }
         }
 
-        // Check for shutdown signal
-        if shutdown_rx.try_recv().is_ok() {
-            break;
+        let shutdown_changed = shutdown_rx.has_changed();
+        match shutdown_changed {
+            Ok(true) => {
+                let _ = shutdown_rx.borrow_and_update();
+                if *shutdown_rx.borrow() {
+                    break;
+                } else {
+                    // No-op
+                }
+            }
+            Ok(false) => {
+                // No-op
+            }
+            Err(_) => {
+                break;
+            }
         }
     }
 

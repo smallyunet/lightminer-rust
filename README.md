@@ -50,6 +50,18 @@ NO_TUI=1 cargo run
 MINING_POOL="stratum.pool.com:3333" cargo run
 ```
 
+### Custom Worker Credentials
+
+```bash
+MINING_USER="user.worker" MINING_PASS="x" cargo run
+```
+
+### Logging Verbosity (Log Mode)
+
+```bash
+NO_TUI=1 RUST_LOG=info cargo run
+```
+
 ## Architecture
 
 ```
@@ -76,7 +88,11 @@ src/
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
 | `MINING_POOL` | Pool address (host:port) | `solo.ckpool.org:3333` |
+| `MINING_USER` | Worker name / username | `lightminer.1` |
+| `MINING_PASS` | Worker password | `x` |
+| `MINING_AGENT` | Stratum `mining.subscribe` agent string | `LightMiner-Rust/0.0.2` |
 | `NO_TUI` | Disable TUI, use log mode | (unset) |
+| `RUST_LOG` | Log filter (only in log mode) | (unset) |
 
 ## Building
 

@@ -63,7 +63,7 @@ fn compute_merkle_root(coinbase: &[u8], merkle_branches: &[String]) -> Result<[u
 }
 
 /// Build the block header template (without nonce and final merkle root)
-pub fn build_header_template(job: &Job, extranonce1: &str) -> Result<BlockHeader> {
+pub fn build_header_template(job: &Job) -> Result<BlockHeader> {
     // Parse version (little-endian)
     let version_bytes = hex_decode(&job.version)?;
     let mut version = [0u8; 4];
