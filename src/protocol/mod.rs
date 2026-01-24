@@ -38,7 +38,8 @@ pub struct Request {
 /// Example: {"id": 1, "result": [["mining.notify", "ae6812eb4cd7735a302a8a9dd95cf71f"], "f0", 4], "error": null}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Response {
-    pub id: u64,
+    /// Stratum pools sometimes send `id: null` (especially for server-side errors).
+    pub id: Option<u64>,
     pub result: Option<Value>,
     pub error: Option<Value>,
 }
@@ -209,15 +210,16 @@ impl Notification {
 
 /// Try to parse a raw JSON line as either Response or Notification
 pub fn parse_message(json_line: &str) -> Result<MessageType, serde_json::Error> {
-    // If it has an "id" field, it's a Response; otherwise it's a Notification
+    // If it has a "method" field, it's a Notification; otherwise it's a Response.
+    // Some pools include `id: null` in notifications or error payloads.
     let value: Value = serde_json::from_str(json_line)?;
-    
-    if value.get("id").is_some() {
-        let response: Response = serde_json::from_value(value)?;
-        Ok(MessageType::Response(response))
-    } else {
+
+    if value.get("method").is_some() {
         let notification: Notification = serde_json::from_value(value)?;
         Ok(MessageType::Notification(notification))
+    } else {
+        let response: Response = serde_json::from_value(value)?;
+        Ok(MessageType::Response(response))
     }
 }
 
@@ -262,7 +264,7 @@ mod tests {
     fn test_deserialize_response_success() {
         let json = r#"{"id":1,"result":[["mining.notify","ae6812eb"],"f0002000",4],"error":null}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.id, 1);
+        assert_eq!(resp.id, Some(1));
         assert!(resp.is_success());
         
         let sub = resp.parse_subscription().unwrap();
@@ -282,6 +284,14 @@ mod tests {
         let json = r#"{"id":2,"result":true,"error":null}"#;
         let resp: Response = serde_json::from_str(json).unwrap();
         assert!(resp.is_authorized());
+    }
+
+    #[test]
+    fn test_deserialize_response_null_id() {
+        let json = r#"{"id":null,"result":null,"error":["SomeError","",null]}"#;
+        let resp: Response = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.id, None);
+        assert!(!resp.is_success());
     }
 
     #[test]
@@ -307,7 +317,7 @@ mod tests {
     fn test_parse_message_response() {
         let json = r#"{"id":1,"result":true,"error":null}"#;
         match parse_message(json).unwrap() {
-            MessageType::Response(r) => assert_eq!(r.id, 1),
+            MessageType::Response(r) => assert_eq!(r.id, Some(1)),
             _ => panic!("Expected Response"),
         }
     }

@@ -14,7 +14,8 @@ impl Config {
         let pool_addr = env::var("MINING_POOL").unwrap_or_else(|_| "solo.ckpool.org:3333".to_string());
         let worker_name = env::var("MINING_USER").unwrap_or_else(|_| "lightminer.1".to_string());
         let worker_password = env::var("MINING_PASS").unwrap_or_else(|_| "x".to_string());
-        let agent = env::var("MINING_AGENT").unwrap_or_else(|_| "LightMiner-Rust/0.0.2".to_string());
+        let agent_default = format!("LightMiner-Rust/{}", env!("CARGO_PKG_VERSION"));
+        let agent = env::var("MINING_AGENT").unwrap_or(agent_default);
         let use_tui = env::var("NO_TUI").is_err();
 
         Self {

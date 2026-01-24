@@ -66,7 +66,10 @@ pub async fn run_with_config(
     };
 
     // 1. Connect
-    let mut client = Client::connect(&config.pool_addr).await?;
+    let (mut client, proxy_info) = Client::connect_with_proxy_info(&config.pool_addr).await?;
+    if let Some(p) = proxy_info {
+        emit(&ui_events, ManagerEvent::Log(format!("Using proxy: {p}"))).await;
+    }
     emit(&ui_events, ManagerEvent::Connected(true)).await;
     emit(
         &ui_events,
@@ -88,7 +91,7 @@ pub async fn run_with_config(
     if let Some(line) = client.next_message().await? {
         info!("Received: {}", line);
         if let Ok(MessageType::Response(resp)) = parse_message(&line) {
-            if resp.id == 1 && resp.is_success() {
+            if resp.id == Some(1) && resp.is_success() {
                 if let Some(sub) = resp.parse_subscription() {
                     info!(
                         "Subscribed! extranonce1={}, extranonce2_size={}",
@@ -197,7 +200,10 @@ async fn handle_pool_message(
                 // No-op
             }
 
-            let is_submit_response = state.pending_submit_ids.remove(&resp.id);
+            let is_submit_response = resp
+                .id
+                .map(|id| state.pending_submit_ids.remove(&id))
+                .unwrap_or(false);
             if is_submit_response {
                 if resp.is_success() {
                     state.metrics.add_accepted();

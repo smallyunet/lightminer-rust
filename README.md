@@ -62,6 +62,23 @@ MINING_USER="user.worker" MINING_PASS="x" cargo run
 NO_TUI=1 RUST_LOG=info cargo run
 ```
 
+## Proxy
+
+LightMiner-Rust will automatically detect and use a proxy when available:
+
+- Environment variables: `ALL_PROXY` / `SOCKS5_PROXY` / `HTTP_PROXY` (and lowercase variants)
+- On macOS: system proxy settings via `scutil --proxy`
+
+You can also override explicitly:
+
+```bash
+# SOCKS5 (recommended for Stratum/TCP)
+MINING_PROXY="socks5://127.0.0.1:7890" cargo run
+
+# HTTP proxy (uses HTTP CONNECT tunnel)
+MINING_PROXY="http://127.0.0.1:7890" cargo run
+```
+
 ## Architecture
 
 ```
@@ -90,7 +107,8 @@ src/
 | `MINING_POOL` | Pool address (host:port) | `solo.ckpool.org:3333` |
 | `MINING_USER` | Worker name / username | `lightminer.1` |
 | `MINING_PASS` | Worker password | `x` |
-| `MINING_AGENT` | Stratum `mining.subscribe` agent string | `LightMiner-Rust/0.0.2` |
+| `MINING_AGENT` | Stratum `mining.subscribe` agent string | `LightMiner-Rust/<crate version>` |
+| `MINING_PROXY` | Proxy URL override (`socks5://` or `http://`) | (auto-detect) |
 | `NO_TUI` | Disable TUI, use log mode | (unset) |
 | `RUST_LOG` | Log filter (only in log mode) | (unset) |
 

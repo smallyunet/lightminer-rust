@@ -1,6 +1,6 @@
 [package]
 name = "lightminer-rust"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 [dependencies]
@@ -10,6 +10,10 @@ serde_json = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Proxy
+tokio-socks = "0.5"
+url = "2"
 
 # Mining
 sha2 = "0.10"
