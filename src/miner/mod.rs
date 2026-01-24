@@ -16,6 +16,7 @@ use crate::protocol::Job;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info};
 
@@ -173,25 +174,31 @@ fn mine_job(
         }
     };
 
+    // Compute merkle root once per extranonce2 (it does NOT depend on nonce).
+    let mut extranonce2 = format!(
+        "{:0width$x}",
+        extranonce2_counter,
+        width = extranonce2_size * 2
+    );
+    let mut merkle_root = match job::compute_merkle_root_for(job, extranonce1, &extranonce2) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("Failed to compute merkle root: {}", e);
+            return;
+        }
+    };
+
     let mut nonce: u32 = 0;
-    let mut hash_count: u64 = 0;
-    const BATCH_SIZE: u64 = 10000;
+    let mut pending_hashes: u64 = 0;
+    let mut last_flush = Instant::now();
 
     while running.load(Ordering::Relaxed) {
-        // Build full header with current extranonce2 and nonce
-        let extranonce2 = format!("{:0width$x}", extranonce2_counter, width = extranonce2_size * 2);
-
-        let header = match job::build_full_header(&header_template, &extranonce2, job, nonce, extranonce1) {
-            Ok(h) => h,
-            Err(_) => {
-                nonce = nonce.wrapping_add(1);
-                continue;
-            }
-        };
+        // Assemble header (fast path). Merkle root is constant until extranonce2 changes.
+        let header = job::assemble_header(&header_template, &merkle_root, nonce);
 
         // Compute SHA256d
         let hash = sha256d(&header);
-        hash_count += 1;
+        pending_hashes += 1;
 
         // Check if hash meets target
         if meets_target(&hash, &target) {
@@ -199,7 +206,7 @@ fn mine_job(
 
             let result = NonceFound {
                 job_id: job.job_id.clone(),
-                extranonce2,
+                extranonce2: extranonce2.clone(),
                 ntime: job.ntime.clone(),
                 nonce: format!("{:08x}", nonce),
             };
@@ -208,22 +215,36 @@ fn mine_job(
             let _ = result_tx.blocking_send(result);
         }
 
-        // Update metrics periodically
-        if hash_count % BATCH_SIZE == 0 {
-            metrics.add_hashes(BATCH_SIZE);
+        // Flush metrics on a short time interval so UI/log mode doesn't stay at 0 for a long time.
+        if last_flush.elapsed() >= Duration::from_millis(250) {
+            if pending_hashes > 0 {
+                metrics.add_hashes(pending_hashes);
+                pending_hashes = 0;
+            }
+            last_flush = Instant::now();
         }
 
         // Increment nonce
         nonce = nonce.wrapping_add(1);
 
-        // If nonce wraps around, increment extranonce2
+        // If nonce wraps around, increment extranonce2 and recompute merkle root.
         if nonce == 0 {
             extranonce2_counter += 1;
+            extranonce2 = format!(
+                "{:0width$x}",
+                extranonce2_counter,
+                width = extranonce2_size * 2
+            );
+            if let Ok(m) = job::compute_merkle_root_for(job, extranonce1, &extranonce2) {
+                merkle_root = m;
+            }
         }
     }
 
     // Final metrics update
-    metrics.add_hashes(hash_count % BATCH_SIZE);
+    if pending_hashes > 0 {
+        metrics.add_hashes(pending_hashes);
+    }
 }
 
 #[cfg(test)]

@@ -62,6 +62,12 @@ fn compute_merkle_root(coinbase: &[u8], merkle_branches: &[String]) -> Result<[u
     Ok(current)
 }
 
+/// Compute merkle root for a job given extranonce values.
+pub fn compute_merkle_root_for(job: &Job, extranonce1: &str, extranonce2: &str) -> Result<[u8; 32]> {
+    let coinbase = build_coinbase(job, extranonce1, extranonce2)?;
+    compute_merkle_root(&coinbase, &job.merkle_branches)
+}
+
 /// Build the block header template (without nonce and final merkle root)
 pub fn build_header_template(job: &Job) -> Result<BlockHeader> {
     // Parse version (little-endian)
@@ -71,11 +77,12 @@ pub fn build_header_template(job: &Job) -> Result<BlockHeader> {
         version.copy_from_slice(&version_bytes[..4]);
     }
 
-    // Parse prev_hash (needs byte reversal for proper format)
+    // Parse prev_hash (block header stores this in little-endian)
     let prev_hash_bytes = hex_decode(&job.prev_hash)?;
     let mut prev_hash = [0u8; 32];
     if prev_hash_bytes.len() >= 32 {
         prev_hash.copy_from_slice(&prev_hash_bytes[..32]);
+        prev_hash.reverse();
     }
 
     // Parse ntime
@@ -101,7 +108,20 @@ pub fn build_header_template(job: &Job) -> Result<BlockHeader> {
     })
 }
 
+/// Assemble an 80-byte block header from a template, merkle root, and nonce.
+pub fn assemble_header(template: &BlockHeader, merkle_root: &[u8; 32], nonce: u32) -> [u8; 80] {
+    let mut header = [0u8; 80];
+    header[0..4].copy_from_slice(&template.version);
+    header[4..36].copy_from_slice(&template.prev_hash);
+    header[36..68].copy_from_slice(merkle_root);
+    header[68..72].copy_from_slice(&template.ntime);
+    header[72..76].copy_from_slice(&template.nbits);
+    header[76..80].copy_from_slice(&nonce.to_le_bytes());
+    header
+}
+
 /// Build the full 80-byte block header
+#[allow(dead_code)]
 pub fn build_full_header(
     template: &BlockHeader,
     extranonce2: &str,
