@@ -43,6 +43,10 @@ impl Metrics {
         self.hashes.load(Ordering::Relaxed)
     }
 
+    pub fn uptime_secs(&self) -> u64 {
+        self.start_time.elapsed().as_secs()
+    }
+
     /// Calculate hashrate in H/s
     pub fn hashrate(&self) -> f64 {
         let elapsed = self.start_time.elapsed().as_secs_f64();

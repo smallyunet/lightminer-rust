@@ -74,6 +74,9 @@ fn apply_manager_event(state: &mut AppState, event: ManagerEvent) {
         ManagerEvent::Connected(is_connected) => {
             state.connected = is_connected;
         }
+        ManagerEvent::ProxyInfo(proxy) => {
+            state.proxy = proxy;
+        }
         ManagerEvent::Difficulty(difficulty) => {
             state.difficulty = difficulty;
         }
@@ -117,7 +120,7 @@ pub fn draw(frame: &mut Frame, app_state: &AppState) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(7),  // Header & Status
+            Constraint::Length(9),  // Header & Status
             Constraint::Length(5),  // Hashrate
             Constraint::Length(5),  // Shares
             Constraint::Min(10),    // Logs
@@ -175,6 +178,16 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
             Span::styled(&app_state.pool_address, Style::default().fg(Color::White)),
         ]),
         Line::from(vec![
+            Span::raw("  Proxy: "),
+            Span::styled(
+                app_state
+                    .proxy
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string()),
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(vec![
             Span::raw("  Status: "),
             Span::styled(status_text, Style::default().fg(status_color)),
             Span::raw("    Difficulty: "),
@@ -190,10 +203,33 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
                 Style::default().fg(Color::Yellow),
             ),
         ]),
+        Line::from(vec![
+            Span::raw("  Uptime: "),
+            Span::styled(
+                format_duration(app_state.uptime_secs),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw("    Threads: "),
+            Span::styled(
+                format!("{}", app_state.miner_threads),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
     ];
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
+}
+
+fn format_duration(total_secs: u64) -> String {
+    let h = total_secs / 3600;
+    let m = (total_secs % 3600) / 60;
+    let s = total_secs % 60;
+    if h > 0 {
+        format!("{h}h{m:02}m{s:02}s")
+    } else {
+        format!("{m}m{s:02}s")
+    }
 }
 
 fn draw_hashrate(frame: &mut Frame, area: Rect, app_state: &AppState) {

@@ -7,6 +7,15 @@ pub struct Config {
     pub worker_password: String,
     pub agent: String,
     pub use_tui: bool,
+
+    /// Automatically reconnect when the pool disconnects.
+    pub reconnect: bool,
+
+    /// Maximum backoff delay between reconnect attempts.
+    pub reconnect_max_delay_ms: u64,
+
+    /// Number of parallel CPU mining threads.
+    pub miner_threads: usize,
 }
 
 impl Config {
@@ -18,12 +27,42 @@ impl Config {
         let agent = env::var("MINING_AGENT").unwrap_or(agent_default);
         let use_tui = env::var("NO_TUI").is_err();
 
+        let reconnect = parse_bool_env("MINING_RECONNECT", true);
+        let reconnect_max_delay_ms = env::var("MINING_RECONNECT_MAX_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30_000);
+
+        let miner_threads = env::var("MINING_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or_else(|| num_cpus::get().max(1));
+
         Self {
             pool_addr,
             worker_name,
             worker_password,
             agent,
             use_tui,
+
+            reconnect,
+            reconnect_max_delay_ms,
+            miner_threads,
         }
+    }
+}
+
+fn parse_bool_env(key: &str, default: bool) -> bool {
+    match env::var(key) {
+        Ok(v) => {
+            let v = v.trim().to_ascii_lowercase();
+            match v.as_str() {
+                "1" | "true" | "yes" | "y" | "on" => true,
+                "0" | "false" | "no" | "n" | "off" => false,
+                _ => default,
+            }
+        }
+        Err(_) => default,
     }
 }

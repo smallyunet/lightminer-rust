@@ -14,7 +14,7 @@ mod job;
 use crate::manager::Metrics;
 use crate::protocol::Job;
 use sha2::{Digest, Sha256};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -100,8 +100,13 @@ pub async fn run_worker(
     mut job_rx: mpsc::Receiver<MinerCommand>,
     result_tx: mpsc::Sender<NonceFound>,
     metrics: Arc<Metrics>,
+    threads: usize,
 ) {
-    let running = Arc::new(AtomicBool::new(false));
+    let threads = threads.max(1);
+
+    // Epoch-based cancellation: each NewJob/Stop bumps the epoch.
+    // A mining task only runs while its captured epoch matches.
+    let epoch = Arc::new(AtomicU64::new(0));
 
     loop {
         match job_rx.recv().await {
@@ -111,36 +116,42 @@ pub async fn run_worker(
                 extranonce2_size,
                 difficulty,
             }) => {
-                // Stop any previous mining
-                running.store(false, Ordering::SeqCst);
-
-                // Start new mining task
-                running.store(true, Ordering::SeqCst);
+                // Stop any previous mining and start a new epoch.
+                let my_epoch = epoch.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
 
                 info!(
                     "Starting mining on job {} with difficulty {}",
                     job.job_id, difficulty
                 );
 
-                let running_clone = Arc::clone(&running);
                 let result_tx_clone = result_tx.clone();
                 let metrics_clone = Arc::clone(&metrics);
 
-                // Spawn mining task
-                tokio::task::spawn_blocking(move || {
-                    mine_job(
-                        &job,
-                        &extranonce1,
-                        extranonce2_size,
-                        difficulty,
-                        running_clone,
-                        result_tx_clone,
-                        metrics_clone,
-                    );
-                });
+                for thread_idx in 0..threads {
+                    let job = job.clone();
+                    let extranonce1 = extranonce1.clone();
+                    let result_tx = result_tx_clone.clone();
+                    let metrics = Arc::clone(&metrics_clone);
+                    let epoch = Arc::clone(&epoch);
+
+                    tokio::task::spawn_blocking(move || {
+                        mine_job(
+                            &job,
+                            &extranonce1,
+                            extranonce2_size,
+                            difficulty,
+                            epoch,
+                            my_epoch,
+                            result_tx,
+                            metrics,
+                            thread_idx as u32,
+                            threads as u32,
+                        );
+                    });
+                }
             }
             Some(MinerCommand::Stop) => {
-                running.store(false, Ordering::SeqCst);
+                let _ = epoch.fetch_add(1, Ordering::SeqCst);
                 debug!("Mining stopped");
             }
             None => {
@@ -156,9 +167,12 @@ fn mine_job(
     extranonce1: &str,
     extranonce2_size: usize,
     difficulty: f64,
-    running: Arc<AtomicBool>,
+    epoch: Arc<AtomicU64>,
+    my_epoch: u64,
     result_tx: mpsc::Sender<NonceFound>,
     metrics: Arc<Metrics>,
+    nonce_start: u32,
+    nonce_step: u32,
 ) {
     let target = difficulty_to_target(difficulty);
 
@@ -188,11 +202,11 @@ fn mine_job(
         }
     };
 
-    let mut nonce: u32 = 0;
+    let mut nonce: u32 = nonce_start;
     let mut pending_hashes: u64 = 0;
     let mut last_flush = Instant::now();
 
-    while running.load(Ordering::Relaxed) {
+    while epoch.load(Ordering::Relaxed) == my_epoch {
         // Assemble header (fast path). Merkle root is constant until extranonce2 changes.
         let header = job::assemble_header(&header_template, &merkle_root, nonce);
 
@@ -224,11 +238,13 @@ fn mine_job(
             last_flush = Instant::now();
         }
 
-        // Increment nonce
-        nonce = nonce.wrapping_add(1);
+        // Increment nonce across threads.
+        let next = nonce.wrapping_add(nonce_step);
+        let wrapped = next < nonce;
+        nonce = next;
 
-        // If nonce wraps around, increment extranonce2 and recompute merkle root.
-        if nonce == 0 {
+        // If nonce wraps around (for this stride), increment extranonce2 and recompute merkle root.
+        if wrapped {
             extranonce2_counter += 1;
             extranonce2 = format!(
                 "{:0width$x}",

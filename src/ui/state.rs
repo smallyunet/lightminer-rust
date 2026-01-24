@@ -10,12 +10,15 @@ const MAX_LOGS: usize = 100;
 pub struct AppState {
     pub pool_address: String,
     pub connected: bool,
+    pub proxy: Option<String>,
     pub difficulty: f64,
     pub hashrate: f64,
     pub total_hashes: u64,
     pub accepted: u64,
     pub rejected: u64,
     pub current_job: Option<String>,
+    pub uptime_secs: u64,
+    pub miner_threads: usize,
     pub logs: VecDeque<String>,
 }
 
@@ -24,21 +27,25 @@ impl Default for AppState {
         Self {
             pool_address: String::new(),
             connected: false,
+            proxy: None,
             difficulty: 1.0,
             hashrate: 0.0,
             total_hashes: 0,
             accepted: 0,
             rejected: 0,
             current_job: None,
+            uptime_secs: 0,
+            miner_threads: 1,
             logs: VecDeque::with_capacity(MAX_LOGS),
         }
     }
 }
 
 impl AppState {
-    pub fn new(pool_address: &str) -> Self {
+    pub fn new(pool_address: &str, miner_threads: usize) -> Self {
         Self {
             pool_address: pool_address.to_string(),
+            miner_threads: miner_threads.max(1),
             ..Default::default()
         }
     }
@@ -68,5 +75,6 @@ impl AppState {
         self.total_hashes = metrics.hashes();
         self.accepted = metrics.accepted();
         self.rejected = metrics.rejected();
+        self.uptime_secs = metrics.uptime_secs();
     }
 }

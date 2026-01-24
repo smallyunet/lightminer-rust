@@ -39,3 +39,16 @@
 - [x] **Config**: Support `MINING_USER`, `MINING_PASS`, and `MINING_AGENT` environment variables.
 - [x] **Shutdown**: Graceful shutdown on `Q/Esc` and Ctrl-C.
 - [x] **Correctness**: Track share accept/reject only for actual `mining.submit` responses.
+
+## Release v0.0.3: Proxy Support + Better UX ✅
+**Goal:** Make connectivity more robust behind proxies and improve user feedback.
+- [x] **Proxy**: Support `MINING_PROXY` and standard env vars (`ALL_PROXY`/`HTTP_PROXY`/`SOCKS5_PROXY`).
+- [x] **macOS**: Detect system proxy via `scutil --proxy`.
+- [x] **UX**: Improve authorization failure messaging.
+
+## Release v0.0.4: Reconnect + Parallel Miner + Status ✅
+**Goal:** Improve long-running stability and make CPU mining scale with cores.
+- [x] **Reconnect**: Auto-reconnect with exponential backoff (`MINING_RECONNECT*`).
+- [x] **Miner**: True multi-thread mining via `MINING_THREADS`.
+- [x] **Correctness**: Robust job cancellation (old jobs must never resume).
+- [x] **TUI**: Show proxy / uptime / threads in header.

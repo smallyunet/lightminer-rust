@@ -79,7 +79,10 @@ async fn run_with_tui(config: config::Config) -> Result<()> {
     let terminal = ui::init_terminal()?;
 
     // Create shared app state
-    let app_state = Arc::new(RwLock::new(ui::AppState::new(&config.pool_addr)));
+    let app_state = Arc::new(RwLock::new(ui::AppState::new(
+        &config.pool_addr,
+        config.miner_threads,
+    )));
     {
         let mut state = app_state.write().await;
         state.add_log("Starting LightMiner-Rust...".to_string());

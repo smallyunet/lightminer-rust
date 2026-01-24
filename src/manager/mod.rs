@@ -16,6 +16,7 @@ pub use metrics::Metrics;
 pub enum ManagerEvent {
     Log(String),
     Connected(bool),
+    ProxyInfo(Option<String>),
     Difficulty(f64),
     CurrentJob(Option<String>),
     ShareAccepted,
@@ -50,39 +51,168 @@ pub async fn run_with_config(
     ui_events: Option<mpsc::Sender<ManagerEvent>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
-    emit(&ui_events, ManagerEvent::Connected(false)).await;
-    emit(
-        &ui_events,
-        ManagerEvent::Log(format!("Connecting to {}...", config.pool_addr)),
-    )
-    .await;
-
     // Create channels for miner communication
     let (miner_tx, mut miner_rx) = mpsc::channel::<NonceFound>(32);
     let (job_tx, job_rx) = mpsc::channel::<MinerCommand>(32);
 
-    // Initialize manager state
-    let mut state = ManagerState {
-        metrics,
-        ..ManagerState::default()
-    };
+    // Start the miner worker once; job cancellation is epoch-based.
+    let miner_metrics = Arc::clone(&metrics);
+    let miner_threads = config.miner_threads;
+    let miner_handle = tokio::spawn(async move {
+        crate::miner::run_worker(job_rx, miner_tx, miner_metrics, miner_threads).await
+    });
+
+    let mut backoff_ms: u64 = 500;
+    let max_backoff_ms = config.reconnect_max_delay_ms.max(500);
+
+    loop {
+        if *shutdown_rx.borrow() {
+            emit(&ui_events, ManagerEvent::Log("Shutdown requested".to_string())).await;
+            break;
+        }
+
+        let session = connect_and_handshake(&config, Arc::clone(&metrics), &ui_events).await;
+        let (mut client, mut state, mut request_id) = match session {
+            Ok(v) => {
+                backoff_ms = 500;
+                v
+            }
+            Err(e) => {
+                emit(&ui_events, ManagerEvent::Connected(false)).await;
+                emit(&ui_events, ManagerEvent::ProxyInfo(None)).await;
+                emit(&ui_events, ManagerEvent::CurrentJob(None)).await;
+                emit(
+                    &ui_events,
+                    ManagerEvent::Log(format!("Connect/handshake failed: {e:?}")),
+                )
+                .await;
+
+                if !config.reconnect {
+                    break;
+                }
+
+                let wait_ms = backoff_ms;
+                emit(
+                    &ui_events,
+                    ManagerEvent::Log(format!("Reconnecting in {wait_ms}ms...")),
+                )
+                .await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {}
+                    _ = shutdown_rx.changed() => {}
+                }
+                backoff_ms = (backoff_ms.saturating_mul(2)).min(max_backoff_ms);
+                continue;
+            }
+        };
+
+        info!("Entering session event loop...");
+        let mut session_ended = false;
+        while !session_ended {
+            tokio::select! {
+                shutdown_result = shutdown_rx.changed() => {
+                    match shutdown_result {
+                        Ok(()) => {
+                            if *shutdown_rx.borrow() {
+                                emit(&ui_events, ManagerEvent::Log("Shutdown requested".to_string())).await;
+                                session_ended = true;
+                            }
+                        }
+                        Err(_) => {
+                            session_ended = true;
+                        }
+                    }
+                }
+                msg_result = client.next_message() => {
+                    match msg_result {
+                        Ok(Some(line)) => {
+                            handle_pool_message(&line, &mut state, &job_tx, &ui_events).await?;
+                        }
+                        Ok(None) => {
+                            warn!("Connection closed by server.");
+                            emit(&ui_events, ManagerEvent::Connected(false)).await;
+                            emit(&ui_events, ManagerEvent::Log("Disconnected".to_string())).await;
+                            session_ended = true;
+                        }
+                        Err(e) => {
+                            error!("Network error: {:?}", e);
+                            emit(&ui_events, ManagerEvent::Connected(false)).await;
+                            emit(&ui_events, ManagerEvent::Log(format!("Network error: {e:?}"))).await;
+                            session_ended = true;
+                        }
+                    }
+                }
+                Some(nonce_found) = miner_rx.recv() => {
+                    handle_nonce_found(&nonce_found, &mut client, &mut request_id, &mut state, &config, &ui_events).await?;
+                }
+            }
+        }
+
+        // Stop miner work for the old session.
+        let _ = job_tx.send(MinerCommand::Stop).await;
+        emit(&ui_events, ManagerEvent::CurrentJob(None)).await;
+
+        if !config.reconnect || *shutdown_rx.borrow() {
+            break;
+        }
+
+        let wait_ms = backoff_ms;
+        emit(
+            &ui_events,
+            ManagerEvent::Log(format!("Reconnecting in {wait_ms}ms...")),
+        )
+        .await;
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_millis(wait_ms)) => {}
+            _ = shutdown_rx.changed() => {}
+        }
+        backoff_ms = (backoff_ms.saturating_mul(2)).min(max_backoff_ms);
+    }
+
+    // Cleanup
+    let _ = job_tx.send(MinerCommand::Stop).await;
+    drop(job_tx);
+    let _ = miner_handle.await;
+
+    Ok(())
+}
+
+async fn connect_and_handshake(
+    config: &Config,
+    metrics: Arc<Metrics>,
+    ui_events: &Option<mpsc::Sender<ManagerEvent>>,
+) -> Result<(Client, ManagerState, u64)> {
+    emit(ui_events, ManagerEvent::Connected(false)).await;
+    emit(
+        ui_events,
+        ManagerEvent::Log(format!("Connecting to {}...", config.pool_addr)),
+    )
+    .await;
 
     // 1. Connect
     let (mut client, proxy_info) = Client::connect_with_proxy_info(&config.pool_addr).await?;
+    emit(ui_events, ManagerEvent::ProxyInfo(proxy_info.clone())).await;
     if let Some(p) = proxy_info {
-        emit(&ui_events, ManagerEvent::Log(format!("Using proxy: {p}"))).await;
+        emit(ui_events, ManagerEvent::Log(format!("Using proxy: {p}"))).await;
     }
-    emit(&ui_events, ManagerEvent::Connected(true)).await;
+    emit(ui_events, ManagerEvent::Connected(true)).await;
     emit(
-        &ui_events,
+        ui_events,
         ManagerEvent::Log(format!("Connected to {}", config.pool_addr)),
     )
     .await;
 
+    // Initialize session state
+    let mut state = ManagerState {
+        metrics,
+        ..ManagerState::default()
+    };
+    state.pending_submit_ids.clear();
+    state.authorize_request_id = None;
+
     // 2. Subscribe
     let subscribe_req = Request::subscribe(1, &config.agent);
     let req_json = serde_json::to_string(&subscribe_req).context("Failed to serialize request")?;
-
     info!("Sending Subscribe Request...");
     client.send(&req_json).await?;
 
@@ -100,7 +230,7 @@ pub async fn run_with_config(
                         sub.extranonce1, sub.extranonce2_size
                     );
                     state.subscription = Some(sub);
-                    emit(&ui_events, ManagerEvent::Log("Subscribed successfully".to_string())).await;
+                    emit(ui_events, ManagerEvent::Log("Subscribed successfully".to_string())).await;
                 }
             }
         }
@@ -115,64 +245,7 @@ pub async fn run_with_config(
     info!("Sending Authorize Request for {}...", config.worker_name);
     client.send(&auth_json).await?;
 
-    // Start the miner worker
-    let miner_metrics = Arc::clone(&state.metrics);
-    let miner_handle = tokio::spawn(async move {
-        crate::miner::run_worker(job_rx, miner_tx, miner_metrics).await
-    });
-
-    // Main event loop
-    info!("Entering main event loop...");
-    loop {
-        tokio::select! {
-            shutdown_result = shutdown_rx.changed() => {
-                match shutdown_result {
-                    Ok(()) => {
-                        if *shutdown_rx.borrow() {
-                            emit(&ui_events, ManagerEvent::Log("Shutdown requested".to_string())).await;
-                            break;
-                        } else {
-                            continue;
-                        }
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                }
-            }
-            // Handle messages from pool
-            msg_result = client.next_message() => {
-                match msg_result {
-                    Ok(Some(line)) => {
-                        handle_pool_message(&line, &mut state, &job_tx, &ui_events).await?;
-                    }
-                    Ok(None) => {
-                        warn!("Connection closed by server.");
-                        emit(&ui_events, ManagerEvent::Connected(false)).await;
-                        emit(&ui_events, ManagerEvent::Log("Disconnected".to_string())).await;
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Network error: {:?}", e);
-                        emit(&ui_events, ManagerEvent::Connected(false)).await;
-                        emit(&ui_events, ManagerEvent::Log(format!("Network error: {e:?}"))).await;
-                        break;
-                    }
-                }
-            }
-            // Handle nonce found from miner
-            Some(nonce_found) = miner_rx.recv() => {
-                handle_nonce_found(&nonce_found, &mut client, &mut request_id, &mut state, &config, &ui_events).await?;
-            }
-        }
-    }
-
-    // Cleanup
-    let _ = job_tx.send(MinerCommand::Stop).await;
-    drop(job_tx);
-    let _ = miner_handle.await;
-
-    Ok(())
+    Ok((client, state, request_id))
 }
 
 async fn emit(ui_events: &Option<mpsc::Sender<ManagerEvent>>, event: ManagerEvent) {

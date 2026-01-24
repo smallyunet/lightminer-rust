@@ -109,6 +109,9 @@ src/
 | `MINING_PASS` | Worker password | `x` |
 | `MINING_AGENT` | Stratum `mining.subscribe` agent string | `LightMiner-Rust/<crate version>` |
 | `MINING_PROXY` | Proxy URL override (`socks5://` or `http://`) | (auto-detect) |
+| `MINING_RECONNECT` | Auto-reconnect on disconnect (`true/false`) | `true` |
+| `MINING_RECONNECT_MAX_DELAY_MS` | Max reconnect backoff delay (ms) | `30000` |
+| `MINING_THREADS` | CPU mining threads | (CPU cores) |
 | `NO_TUI` | Disable TUI, use log mode | (unset) |
 | `RUST_LOG` | Log filter (only in log mode) | (unset) |
 
