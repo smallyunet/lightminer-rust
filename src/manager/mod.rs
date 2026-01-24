@@ -28,6 +28,7 @@ pub struct ManagerState {
     pub difficulty: f64,
     pub metrics: Arc<Metrics>,
     pending_submit_ids: HashSet<u64>,
+    authorize_request_id: Option<u64>,
 }
 
 impl Default for ManagerState {
@@ -38,6 +39,7 @@ impl Default for ManagerState {
             difficulty: 1.0,
             metrics: Arc::new(Metrics::new()),
             pending_submit_ids: HashSet::new(),
+            authorize_request_id: None,
         }
     }
 }
@@ -107,6 +109,7 @@ pub async fn run_with_config(
     // 3. Authorize
     let auth_req = Request::authorize(request_id, &config.worker_name, &config.worker_password);
     let auth_json = serde_json::to_string(&auth_req).context("Failed to serialize auth request")?;
+    state.authorize_request_id = Some(auth_req.id);
     request_id += 1;
 
     info!("Sending Authorize Request for {}...", config.worker_name);
@@ -190,14 +193,29 @@ async fn handle_pool_message(
 
     match parse_message(line) {
         Ok(MessageType::Response(resp)) => {
-            if resp.is_authorized() {
-                info!("Authorization successful!");
-                emit(ui_events, ManagerEvent::Log("Authorization successful".to_string())).await;
-            } else if resp.error.is_some() {
+            let is_auth_response = state.authorize_request_id.is_some() && resp.id == state.authorize_request_id;
+            if is_auth_response {
+                if resp.is_authorized() {
+                    info!("Authorization successful!");
+                    emit(ui_events, ManagerEvent::Log("Authorization successful".to_string())).await;
+                } else {
+                    // Many pools (including ckpool) respond with: {"result": false, "error": null}
+                    // when the username/address is invalid. Without this log it looks like "connected but no job".
+                    warn!("Authorization failed (result=false). worker_name={}", "<redacted>");
+                    emit(
+                        ui_events,
+                        ManagerEvent::Log(
+                            "Authorization failed (pool returned result=false). Check MINING_USER (ckpool usually requires a BTC address, e.g. <address>.worker)."
+                                .to_string(),
+                        ),
+                    )
+                    .await;
+                }
+            }
+
+            if resp.error.is_some() {
                 warn!("Response error: {:?}", resp.error);
                 emit(ui_events, ManagerEvent::Log(format!("Pool error: {:?}", resp.error))).await;
-            } else {
-                // No-op
             }
 
             let is_submit_response = resp

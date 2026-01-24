@@ -116,18 +116,29 @@ async fn run_with_tui(config: config::Config) -> Result<()> {
 
     let mut ui_task = tokio::spawn(ui::run_ui(terminal, Arc::clone(&app_state), shutdown_rx));
 
+    // IMPORTANT: `JoinHandle` panics if it is polled after completion.
+    // We track which task finished in `select!` so we don't `.await` it again.
+    let mut ui_finished = false;
+    let mut manager_finished = false;
+
     tokio::select! {
         _ = &mut ui_task => {
             let _ = shutdown_tx.send(true);
+            ui_finished = true;
         }
         _ = &mut manager_task => {
             let _ = shutdown_tx.send(true);
+            manager_finished = true;
         }
     }
 
-    let _ = manager_task.await;
+    if !manager_finished {
+        let _ = manager_task.await;
+    }
     let _ = state_task.await;
-    let _ = ui_task.await;
+    if !ui_finished {
+        let _ = ui_task.await;
+    }
 
     Ok(())
 }
