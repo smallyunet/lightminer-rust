@@ -1,1 +1,0 @@
-NO_TUI=1 RUST_LOG=info MINING_USER="bc1qs07f6fqmsd06ypmuv6sltqhxl4fs45arflr4jc.lightminer" MINING_PASS="x" cargo run
