@@ -52,3 +52,10 @@
 - [x] **Miner**: True multi-thread mining via `MINING_THREADS`.
 - [x] **Correctness**: Robust job cancellation (old jobs must never resume).
 - [x] **TUI**: Show proxy / uptime / threads in header.
+
+## Release v0.0.5: Robust Handshake + Idle Timeout + Auth Status ✅
+**Goal:** Reduce “connected but idle” failure modes and make session state clearer.
+- [x] **Handshake**: Reliably wait for `mining.subscribe` response even if notifications arrive first.
+- [x] **Reconnect**: Idle timeout reconnect when the TCP session stalls (`MINING_IDLE_TIMEOUT_SECS`).
+- [x] **Config**: Add handshake timeout (`MINING_HANDSHAKE_TIMEOUT_MS`).
+- [x] **TUI**: Show authorization status (Auth: OK/FAIL/-).

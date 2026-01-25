@@ -10,6 +10,7 @@ const MAX_LOGS: usize = 100;
 pub struct AppState {
     pub pool_address: String,
     pub connected: bool,
+    pub authorized: Option<bool>,
     pub proxy: Option<String>,
     pub difficulty: f64,
     pub hashrate: f64,
@@ -27,6 +28,7 @@ impl Default for AppState {
         Self {
             pool_address: String::new(),
             connected: false,
+            authorized: None,
             proxy: None,
             difficulty: 1.0,
             hashrate: 0.0,

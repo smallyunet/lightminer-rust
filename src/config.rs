@@ -16,6 +16,13 @@ pub struct Config {
 
     /// Number of parallel CPU mining threads.
     pub miner_threads: usize,
+
+    /// Maximum time to wait for the Stratum subscribe response during handshake.
+    pub handshake_timeout_ms: u64,
+
+    /// If no message is received from the pool for this duration, the session is considered stuck
+    /// and will be reconnected (when reconnect is enabled).
+    pub idle_timeout_secs: u64,
 }
 
 impl Config {
@@ -39,6 +46,18 @@ impl Config {
             .filter(|v| *v > 0)
             .unwrap_or_else(|| num_cpus::get().max(1));
 
+        let handshake_timeout_ms = env::var("MINING_HANDSHAKE_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(10_000);
+
+        let idle_timeout_secs = env::var("MINING_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(120);
+
         Self {
             pool_addr,
             worker_name,
@@ -49,6 +68,9 @@ impl Config {
             reconnect,
             reconnect_max_delay_ms,
             miner_threads,
+
+            handshake_timeout_ms,
+            idle_timeout_secs,
         }
     }
 }

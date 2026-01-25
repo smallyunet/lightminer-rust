@@ -111,6 +111,8 @@ src/
 | `MINING_PROXY` | Proxy URL override (`socks5://` or `http://`) | (auto-detect) |
 | `MINING_RECONNECT` | Auto-reconnect on disconnect (`true/false`) | `true` |
 | `MINING_RECONNECT_MAX_DELAY_MS` | Max reconnect backoff delay (ms) | `30000` |
+| `MINING_HANDSHAKE_TIMEOUT_MS` | Handshake timeout waiting for `mining.subscribe` response (ms) | `10000` |
+| `MINING_IDLE_TIMEOUT_SECS` | Reconnect if no message received for N seconds | `120` |
 | `MINING_THREADS` | CPU mining threads | (CPU cores) |
 | `NO_TUI` | Disable TUI, use log mode | (unset) |
 | `RUST_LOG` | Log filter (only in log mode) | (unset) |

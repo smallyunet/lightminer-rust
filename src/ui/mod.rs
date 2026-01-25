@@ -73,6 +73,12 @@ fn apply_manager_event(state: &mut AppState, event: ManagerEvent) {
         }
         ManagerEvent::Connected(is_connected) => {
             state.connected = is_connected;
+            if !is_connected {
+                state.authorized = None;
+            }
+        }
+        ManagerEvent::Authorized(is_authorized) => {
+            state.authorized = Some(is_authorized);
         }
         ManagerEvent::ProxyInfo(proxy) => {
             state.proxy = proxy;
@@ -148,6 +154,18 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
         "○ Disconnected"
     };
 
+    let auth_text = match app_state.authorized {
+        Some(true) => "OK",
+        Some(false) => "FAIL",
+        None => "-",
+    };
+
+    let auth_color = match app_state.authorized {
+        Some(true) => Color::Green,
+        Some(false) => Color::Red,
+        None => Color::Gray,
+    };
+
     let lines = vec![
         Line::from(vec![
             Span::styled(
@@ -190,6 +208,8 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
         Line::from(vec![
             Span::raw("  Status: "),
             Span::styled(status_text, Style::default().fg(status_color)),
+            Span::raw("    Auth: "),
+            Span::styled(auth_text, Style::default().fg(auth_color)),
             Span::raw("    Difficulty: "),
             Span::styled(
                 format!("{:.4}", app_state.difficulty),
