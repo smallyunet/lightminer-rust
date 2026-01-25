@@ -64,7 +64,7 @@ async fn main() -> Result<()> {
         });
 
         let metrics = std::sync::Arc::new(manager::Metrics::new());
-        if let Err(e) = manager::run_with_config(config, metrics, None, shutdown_rx).await {
+        if let Err(e) = manager::run_with_config(config, metrics, None, None, shutdown_rx).await {
             tracing::error!("Manager error: {:?}", e);
         }
         Ok(())
@@ -102,6 +102,7 @@ async fn run_with_tui(config: config::Config) -> Result<()> {
 
     let metrics = Arc::new(manager::Metrics::new());
     let (event_tx, event_rx) = tokio::sync::mpsc::channel::<manager::ManagerEvent>(256);
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<manager::ManagerCommand>(32);
 
     let state_task = tokio::spawn(ui::run_state_updater(
         Arc::clone(&app_state),
@@ -114,10 +115,16 @@ async fn run_with_tui(config: config::Config) -> Result<()> {
         config,
         Arc::clone(&metrics),
         Some(event_tx),
+        Some(cmd_rx),
         shutdown_rx.clone(),
     ));
 
-    let mut ui_task = tokio::spawn(ui::run_ui(terminal, Arc::clone(&app_state), shutdown_rx));
+    let mut ui_task = tokio::spawn(ui::run_ui(
+        terminal,
+        Arc::clone(&app_state),
+        Some(cmd_tx),
+        shutdown_rx,
+    ));
 
     // IMPORTANT: `JoinHandle` panics if it is polled after completion.
     // We track which task finished in `select!` so we don't `.await` it again.

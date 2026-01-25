@@ -1,6 +1,6 @@
 use super::handshake::connect_and_handshake;
 use super::session::{dispatch_job, handle_nonce_found, handle_pool_message};
-use super::{ManagerEvent, Metrics};
+use super::{ManagerCommand, ManagerEvent, Metrics, PoolStatus};
 use crate::config::{Config, PoolStrategy};
 use crate::miner::{MinerCommand, NonceFound};
 use anyhow::Result;
@@ -15,10 +15,14 @@ struct PoolRuntime {
     pool: crate::config::PoolConfig,
     failures: u32,
     cooldown_until: Option<tokio::time::Instant>,
+    disabled: bool,
 }
 
 impl PoolRuntime {
     fn is_available(&self) -> bool {
+        if self.disabled {
+            return false;
+        }
         match self.cooldown_until {
             None => true,
             Some(t) => tokio::time::Instant::now() >= t,
@@ -101,12 +105,53 @@ impl PoolPicker {
 
         None
     }
+
+    fn pick_relative(&mut self, pools: &[PoolRuntime], from: usize, step: isize) -> Option<usize> {
+        if pools.is_empty() || self.schedule.is_empty() {
+            return None;
+        }
+
+        // Find the first position in the schedule that maps to `from`.
+        let Some(mut pos) = self.schedule.iter().position(|i| *i == from) else {
+            return None;
+        };
+
+        let len = self.schedule.len() as isize;
+        for _ in 0..self.schedule.len() {
+            pos = (pos as isize + step).rem_euclid(len) as usize;
+            let idx = self.schedule[pos];
+            if pools.get(idx).map(|p| p.is_available()).unwrap_or(false) {
+                // Move cursor to start after the chosen slot.
+                self.cursor = (pos + 1) % self.schedule.len();
+                return Some(idx);
+            }
+        }
+        None
+    }
+}
+
+fn snapshot_pools_status(pools: &[PoolRuntime]) -> Vec<PoolStatus> {
+    pools
+        .iter()
+        .map(|p| PoolStatus {
+            name: p.pool.name.clone(),
+            addr: p.pool.addr.clone(),
+            coin: p.pool.coin.symbol().to_string(),
+            algo: p.pool.algo.name().to_string(),
+            disabled: p.disabled,
+            cooldown_secs_remaining: p
+                .cooldown_remaining()
+                .map(|d| d.as_secs().max(1)),
+            failures: p.failures,
+        })
+        .collect()
 }
 
 pub async fn run_with_config(
     config: Config,
     metrics: Arc<Metrics>,
     ui_events: Option<mpsc::Sender<ManagerEvent>>,
+    mut command_rx: Option<mpsc::Receiver<ManagerCommand>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     // Create channels for miner communication
@@ -132,9 +177,19 @@ pub async fn run_with_config(
             pool: p,
             failures: 0,
             cooldown_until: None,
+            disabled: false,
         })
         .collect();
     let mut picker = PoolPicker::new(config.pool_strategy, &config.pools);
+
+    emit(
+        &ui_events,
+        ManagerEvent::PoolsStatus(snapshot_pools_status(&pool_runtimes)),
+    )
+    .await;
+
+    // Manual override index set by UI commands.
+    let mut manual_override: Option<usize> = None;
 
     loop {
         if *shutdown_rx.borrow() {
@@ -142,7 +197,15 @@ pub async fn run_with_config(
             break;
         }
 
-        let Some(pool_idx) = picker.pick_next(&pool_runtimes) else {
+        let Some(pool_idx) = (if let Some(i) = manual_override.take() {
+            if pool_runtimes.get(i).map(|p| p.is_available()).unwrap_or(false) {
+                Some(i)
+            } else {
+                None
+            }
+        } else {
+            picker.pick_next(&pool_runtimes)
+        }) else {
             // All pools are on cooldown. Sleep until the earliest cooldown expires.
             let min_remaining = pool_runtimes
                 .iter()
@@ -179,6 +242,12 @@ pub async fn run_with_config(
         )
         .await;
 
+        emit(
+            &ui_events,
+            ManagerEvent::PoolsStatus(snapshot_pools_status(&pool_runtimes)),
+        )
+        .await;
+
         let session =
             connect_and_handshake(&config, &active_pool, Arc::clone(&metrics), &ui_events).await;
         let (mut client, mut state, mut request_id, pending_job) = match session {
@@ -187,6 +256,11 @@ pub async fn run_with_config(
                 pool_runtimes[pool_idx].failures = 0;
                 pool_runtimes[pool_idx].cooldown_until = None;
                 picker.active_idx = Some(pool_idx);
+                emit(
+                    &ui_events,
+                    ManagerEvent::PoolsStatus(snapshot_pools_status(&pool_runtimes)),
+                )
+                .await;
                 v
             }
             Err(e) => {
@@ -208,6 +282,12 @@ pub async fn run_with_config(
                     )
                     .await;
                 }
+
+                emit(
+                    &ui_events,
+                    ManagerEvent::PoolsStatus(snapshot_pools_status(&pool_runtimes)),
+                )
+                .await;
 
                 emit(&ui_events, ManagerEvent::Connected(false)).await;
                 emit(&ui_events, ManagerEvent::ProxyInfo(None)).await;
@@ -255,6 +335,54 @@ pub async fn run_with_config(
             tokio::pin!(idle_sleep);
 
             tokio::select! {
+                maybe_cmd = async {
+                    match command_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => None,
+                    }
+                } => {
+                    if let Some(cmd) = maybe_cmd {
+                        match cmd {
+                            ManagerCommand::SwitchPoolNext => {
+                                if let Some(active) = picker.active_idx {
+                                    if let Some(next) = picker.pick_relative(&pool_runtimes, active, 1) {
+                                        manual_override = Some(next);
+                                        emit(&ui_events, ManagerEvent::Log("Switching to next pool...".to_string())).await;
+                                        session_ended = true;
+                                    }
+                                }
+                            }
+                            ManagerCommand::SwitchPoolPrev => {
+                                if let Some(active) = picker.active_idx {
+                                    if let Some(prev) = picker.pick_relative(&pool_runtimes, active, -1) {
+                                        manual_override = Some(prev);
+                                        emit(&ui_events, ManagerEvent::Log("Switching to previous pool...".to_string())).await;
+                                        session_ended = true;
+                                    }
+                                }
+                            }
+                            ManagerCommand::ToggleDisableActivePool => {
+                                if let Some(active) = picker.active_idx {
+                                    let new_disabled = !pool_runtimes[active].disabled;
+                                    pool_runtimes[active].disabled = new_disabled;
+                                    let msg = if new_disabled { "Disabled current pool" } else { "Enabled current pool" };
+                                    emit(&ui_events, ManagerEvent::Log(msg.to_string())).await;
+                                    emit(
+                                        &ui_events,
+                                        ManagerEvent::PoolsStatus(snapshot_pools_status(&pool_runtimes)),
+                                    )
+                                    .await;
+
+                                    if new_disabled {
+                                        // Force reconnect away from disabled pool.
+                                        picker.active_idx = None;
+                                        session_ended = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 shutdown_result = shutdown_rx.changed() => {
                     match shutdown_result {
                         Ok(()) => {

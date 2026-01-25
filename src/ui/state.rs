@@ -2,6 +2,8 @@
 
 use std::collections::VecDeque;
 
+use crate::manager::PoolStatus;
+
 /// Maximum number of log entries to keep
 const MAX_LOGS: usize = 100;
 
@@ -26,6 +28,8 @@ pub struct AppState {
     pub uptime_secs: u64,
     pub miner_threads: usize,
     pub logs: VecDeque<String>,
+
+    pub pools: Vec<PoolStatus>,
 }
 
 impl Default for AppState {
@@ -49,6 +53,8 @@ impl Default for AppState {
             uptime_secs: 0,
             miner_threads: 1,
             logs: VecDeque::with_capacity(MAX_LOGS),
+
+            pools: Vec::new(),
         }
     }
 }

@@ -37,6 +37,9 @@ cargo run
 **Controls:**
 - `Q` or `Esc` - Quit
 - `C` - Clear logs
+- `p` - Switch to next pool (multi-pool mode)
+- `P` - Switch to previous pool (multi-pool mode)
+- `D` - Disable/Enable current pool (multi-pool mode)
 
 ### Log Mode
 

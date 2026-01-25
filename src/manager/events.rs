@@ -1,8 +1,20 @@
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
+pub struct PoolStatus {
+    pub name: String,
+    pub addr: String,
+    pub coin: String,
+    pub algo: String,
+    pub disabled: bool,
+    pub cooldown_secs_remaining: Option<u64>,
+    pub failures: u32,
+}
+
+#[derive(Debug, Clone)]
 pub enum ManagerEvent {
     Log(String),
+    PoolsStatus(Vec<PoolStatus>),
     ActivePool {
         name: String,
         addr: String,

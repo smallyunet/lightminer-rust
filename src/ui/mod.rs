@@ -3,7 +3,7 @@
 mod state;
 mod widgets;
 
-use crate::manager::{ManagerEvent, Metrics};
+use crate::manager::{ManagerCommand, ManagerEvent, Metrics};
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -70,6 +70,9 @@ fn apply_manager_event(state: &mut AppState, event: ManagerEvent) {
     match event {
         ManagerEvent::Log(message) => {
             state.add_log(message);
+        }
+        ManagerEvent::PoolsStatus(pools) => {
+            state.pools = pools;
         }
         ManagerEvent::ActivePool {
             name,
@@ -142,6 +145,7 @@ pub fn draw(frame: &mut Frame, app_state: &AppState) {
         .margin(1)
         .constraints([
             Constraint::Length(9),  // Header & Status
+            Constraint::Length(7),  // Pools
             Constraint::Length(5),  // Hashrate
             Constraint::Length(5),  // Shares
             Constraint::Min(10),    // Logs
@@ -150,10 +154,61 @@ pub fn draw(frame: &mut Frame, app_state: &AppState) {
         .split(frame.area());
 
     draw_header(frame, chunks[0], app_state);
-    draw_hashrate(frame, chunks[1], app_state);
-    draw_shares(frame, chunks[2], app_state);
-    draw_logs(frame, chunks[3], app_state);
-    draw_footer(frame, chunks[4]);
+    draw_pools(frame, chunks[1], app_state);
+    draw_hashrate(frame, chunks[2], app_state);
+    draw_shares(frame, chunks[3], app_state);
+    draw_logs(frame, chunks[4], app_state);
+    draw_footer(frame, chunks[5]);
+}
+
+fn draw_pools(frame: &mut Frame, area: Rect, app_state: &AppState) {
+    let block = Block::default()
+        .title(" 🧭 Pools (p:next, P:prev, d:disable) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let items: Vec<ListItem> = app_state
+        .pools
+        .iter()
+        .enumerate()
+        .take(inner.height as usize)
+        .map(|(idx, p)| {
+            let is_active = (idx + 1) == app_state.pool_index && app_state.pool_total > 0;
+            let mut line = format!(
+                "{} {} ({}/{}) {}",
+                if is_active { ">" } else { " " },
+                p.name,
+                p.coin,
+                p.algo,
+                p.addr
+            );
+            if p.disabled {
+                line.push_str(" [DISABLED]");
+            } else if let Some(secs) = p.cooldown_secs_remaining {
+                line.push_str(&format!(" [COOLDOWN {}s]", secs));
+            }
+            if p.failures > 0 {
+                line.push_str(&format!(" [fail:{}]", p.failures));
+            }
+
+            let style = if is_active {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else if p.disabled {
+                Style::default().fg(Color::DarkGray)
+            } else if p.cooldown_secs_remaining.is_some() {
+                Style::default().fg(Color::Magenta)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            ListItem::new(Span::styled(line, style))
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), inner);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
@@ -392,6 +447,10 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
         Span::raw("Quit  "),
         Span::styled(" [C] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         Span::raw("Clear Logs  "),
+        Span::styled(" [p/P] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw("Switch Pool  "),
+        Span::styled(" [D] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw("Disable/Enable Pool  "),
     ]);
 
     let paragraph = Paragraph::new(text)
@@ -403,6 +462,7 @@ fn draw_footer(frame: &mut Frame, area: Rect) {
 pub async fn run_ui(
     mut terminal: Terminal<CrosstermBackend<io::Stdout>>,
     app_state: Arc<tokio::sync::RwLock<AppState>>,
+    command_tx: Option<mpsc::Sender<ManagerCommand>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     loop {
@@ -423,6 +483,21 @@ pub async fn run_ui(
                         KeyCode::Char('c') | KeyCode::Char('C') => {
                             let mut state = app_state.write().await;
                             state.logs.clear();
+                        }
+                        KeyCode::Char('p') => {
+                            if let Some(tx) = &command_tx {
+                                let _ = tx.send(ManagerCommand::SwitchPoolNext).await;
+                            }
+                        }
+                        KeyCode::Char('P') => {
+                            if let Some(tx) = &command_tx {
+                                let _ = tx.send(ManagerCommand::SwitchPoolPrev).await;
+                            }
+                        }
+                        KeyCode::Char('d') | KeyCode::Char('D') => {
+                            if let Some(tx) = &command_tx {
+                                let _ = tx.send(ManagerCommand::ToggleDisableActivePool).await;
+                            }
                         }
                         _ => {}
                     }
