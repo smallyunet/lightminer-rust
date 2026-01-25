@@ -3,6 +3,14 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone)]
 pub enum ManagerEvent {
     Log(String),
+    ActivePool {
+        name: String,
+        addr: String,
+        coin: String,
+        algo: String,
+        index: usize,
+        total: usize,
+    },
     Connected(bool),
     Authorized(bool),
     ProxyInfo(Option<String>),

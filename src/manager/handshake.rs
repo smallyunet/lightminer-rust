@@ -1,5 +1,6 @@
 use super::{ManagerEvent, ManagerState, Metrics};
 use crate::config::Config;
+use crate::config::PoolConfig;
 use crate::network::Client;
 use crate::protocol::{parse_message, Job, MessageType, Request};
 use anyhow::{Context, Result};
@@ -11,18 +12,19 @@ use super::events::emit;
 
 pub(crate) async fn connect_and_handshake(
     config: &Config,
+    pool: &PoolConfig,
     metrics: Arc<Metrics>,
     ui_events: &Option<mpsc::Sender<ManagerEvent>>,
 ) -> Result<(Client, ManagerState, u64, Option<Job>)> {
     emit(ui_events, ManagerEvent::Connected(false)).await;
     emit(
         ui_events,
-        ManagerEvent::Log(format!("Connecting to {}...", config.pool_addr)),
+        ManagerEvent::Log(format!("Connecting to {}...", pool.addr)),
     )
     .await;
 
     // 1. Connect
-    let (mut client, proxy_info) = Client::connect_with_proxy_info(&config.pool_addr).await?;
+    let (mut client, proxy_info) = Client::connect_with_proxy_info(&pool.addr).await?;
     emit(ui_events, ManagerEvent::ProxyInfo(proxy_info.clone())).await;
     if let Some(p) = proxy_info {
         emit(ui_events, ManagerEvent::Log(format!("Using proxy: {p}"))).await;
@@ -30,7 +32,7 @@ pub(crate) async fn connect_and_handshake(
     emit(ui_events, ManagerEvent::Connected(true)).await;
     emit(
         ui_events,
-        ManagerEvent::Log(format!("Connected to {}", config.pool_addr)),
+        ManagerEvent::Log(format!("Connected to {}", pool.addr)),
     )
     .await;
 
@@ -39,6 +41,7 @@ pub(crate) async fn connect_and_handshake(
         metrics,
         ..ManagerState::default()
     };
+    state.algorithm = pool.algo.clone();
     state.pending_submit_ids.clear();
     state.authorize_request_id = None;
 
@@ -110,12 +113,12 @@ pub(crate) async fn connect_and_handshake(
     let mut request_id: u64 = 2;
 
     // 3. Authorize
-    let auth_req = Request::authorize(request_id, &config.worker_name, &config.worker_password);
+    let auth_req = Request::authorize(request_id, &pool.user, &pool.pass);
     let auth_json = serde_json::to_string(&auth_req).context("Failed to serialize auth request")?;
     state.authorize_request_id = Some(auth_req.id);
     request_id += 1;
 
-    info!("Sending Authorize Request for {}...", config.worker_name);
+    info!("Sending Authorize Request for {}...", "<redacted>");
     client.send(&auth_json).await?;
 
     Ok((client, state, request_id, pending_job))

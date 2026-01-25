@@ -50,6 +50,49 @@ NO_TUI=1 cargo run
 MINING_POOL="stratum.pool.com:3333" cargo run
 ```
 
+### Multiple Pools (Failover / Rotation)
+
+Configure multiple pools with per-pool credentials/coin:
+
+```bash
+# Format: name@host:port|user|pass|coin|weight|algo;...
+MINING_POOLS="primary@solo.ckpool.org:3333|<btc-address>.worker|x|btc|1|sha256d;backup@stratum.example.com:3333|user.worker|x|btc|1|sha256d" \
+MINING_POOL_STRATEGY="failover" \
+cargo run
+```
+
+### Select Mining Algorithm
+
+Single-pool (legacy env vars) can set the algorithm explicitly:
+
+```bash
+MINING_POOL="ltc-pool.example.com:3333" \
+MINING_USER="user.worker" MINING_PASS="x" \
+MINING_ALGO="scrypt" \
+cargo run
+```
+
+Or per-pool in `MINING_POOLS` (recommended):
+
+```bash
+MINING_POOLS="ltc@ltc-pool.example.com:3333|user.worker|x|ltc|1|scrypt" cargo run
+```
+
+Strategies:
+
+```bash
+MINING_POOL_STRATEGY="failover"   # default, stick to current pool until it fails
+MINING_POOL_STRATEGY="round_robin" # rotate pools on each reconnect
+MINING_POOL_STRATEGY="weighted"    # weighted round-robin via the per-pool weight
+```
+
+Cooldown control (avoid hammering a dead pool):
+
+```bash
+MINING_POOL_FAILURES_BEFORE_COOLDOWN=3
+MINING_POOL_COOLDOWN_SECS=30
+```
+
 ### Custom Worker Credentials
 
 ```bash
@@ -105,6 +148,11 @@ src/
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
 | `MINING_POOL` | Pool address (host:port) | `solo.ckpool.org:3333` |
+| `MINING_ALGO` | Single-pool algorithm: `sha256d`/`scrypt` | `sha256d` |
+| `MINING_POOLS` | Multi-pool list: `name@addr|user|pass|coin|weight|algo;...` | (unset → uses `MINING_POOL`) |
+| `MINING_POOL_STRATEGY` | Pool selection: `failover`/`round_robin`/`weighted` | `failover` |
+| `MINING_POOL_FAILURES_BEFORE_COOLDOWN` | Failures before putting a pool on cooldown | `3` |
+| `MINING_POOL_COOLDOWN_SECS` | Cooldown seconds for unhealthy pools | `30` |
 | `MINING_USER` | Worker name / username | `lightminer.1` |
 | `MINING_PASS` | Worker password | `x` |
 | `MINING_AGENT` | Stratum `mining.subscribe` agent string | `LightMiner-Rust/<crate version>` |

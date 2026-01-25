@@ -8,7 +8,12 @@ const MAX_LOGS: usize = 100;
 /// Shared application state for the TUI
 #[derive(Debug, Clone)]
 pub struct AppState {
+    pub pool_name: String,
     pub pool_address: String,
+    pub pool_index: usize,
+    pub pool_total: usize,
+    pub coin: String,
+    pub algo: String,
     pub connected: bool,
     pub authorized: Option<bool>,
     pub proxy: Option<String>,
@@ -26,7 +31,12 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            pool_name: String::new(),
             pool_address: String::new(),
+            pool_index: 0,
+            pool_total: 0,
+            coin: "BTC".to_string(),
+            algo: "sha256d".to_string(),
             connected: false,
             authorized: None,
             proxy: None,

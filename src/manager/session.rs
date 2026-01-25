@@ -1,5 +1,4 @@
 use super::{ManagerEvent, ManagerState};
-use crate::config::Config;
 use crate::miner::{MinerCommand, NonceFound};
 use crate::network::Client;
 use crate::protocol::{parse_message, Job, MessageType, Request};
@@ -117,6 +116,7 @@ pub(crate) async fn dispatch_job(
                 extranonce1: sub.extranonce1.clone(),
                 extranonce2_size: sub.extranonce2_size,
                 difficulty: state.difficulty,
+                algorithm: state.algorithm.clone(),
             })
             .await;
         state.current_job = Some(job.clone());
@@ -134,7 +134,7 @@ pub(crate) async fn handle_nonce_found(
     client: &mut Client,
     request_id: &mut u64,
     state: &mut ManagerState,
-    config: &Config,
+    worker_name: &str,
     ui_events: &Option<mpsc::Sender<ManagerEvent>>,
 ) -> Result<()> {
     info!(
@@ -153,7 +153,7 @@ pub(crate) async fn handle_nonce_found(
 
     let submit_req = Request::submit(
         *request_id,
-        &config.worker_name,
+        worker_name,
         &nonce_found.job_id,
         &nonce_found.extranonce2,
         &nonce_found.ntime,

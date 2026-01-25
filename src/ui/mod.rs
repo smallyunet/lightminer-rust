@@ -71,6 +71,21 @@ fn apply_manager_event(state: &mut AppState, event: ManagerEvent) {
         ManagerEvent::Log(message) => {
             state.add_log(message);
         }
+        ManagerEvent::ActivePool {
+            name,
+            addr,
+            coin,
+            algo,
+            index,
+            total,
+        } => {
+            state.pool_name = name;
+            state.pool_address = addr;
+            state.coin = coin;
+            state.algo = algo;
+            state.pool_index = index;
+            state.pool_total = total;
+        }
         ManagerEvent::Connected(is_connected) => {
             state.connected = is_connected;
             if !is_connected {
@@ -193,7 +208,22 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
         Line::from(""),
         Line::from(vec![
             Span::raw("  Pool: "),
-            Span::styled(&app_state.pool_address, Style::default().fg(Color::White)),
+            Span::styled(
+                if app_state.pool_total > 0 {
+                    format!(
+                        "[{}/{}] {} ({}) {} {}",
+                        app_state.pool_index.max(1),
+                        app_state.pool_total,
+                        app_state.pool_name,
+                        app_state.coin,
+                        app_state.algo,
+                        app_state.pool_address
+                    )
+                } else {
+                    app_state.pool_address.clone()
+                },
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
             Span::raw("  Proxy: "),

@@ -11,8 +11,11 @@
 
 mod job;
 
+use crate::config::MiningAlgorithm;
 use crate::manager::Metrics;
 use crate::protocol::Job;
+use num_bigint::BigUint;
+use scrypt::{scrypt, Params as ScryptParams};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -30,6 +33,7 @@ pub enum MinerCommand {
         extranonce1: String,
         extranonce2_size: usize,
         difficulty: f64,
+        algorithm: MiningAlgorithm,
     },
     Stop,
 }
@@ -52,47 +56,81 @@ pub fn sha256d(data: &[u8]) -> [u8; 32] {
     result
 }
 
+fn scrypt_pow_1024_1_1_256(header: &[u8; 80]) -> [u8; 32] {
+    // Litecoin/Dogecoin PoW: scrypt_1024_1_1_256
+    // password = header, salt = header, output 32 bytes
+    let params = ScryptParams::new(10, 1, 1, 32).expect("valid scrypt params");
+    let mut out = [0u8; 32];
+    scrypt(header, header, &params, &mut out).expect("scrypt should not fail");
+    out
+}
+
+fn hash_header(algorithm: &MiningAlgorithm, header: &[u8; 80]) -> [u8; 32] {
+    match algorithm {
+        MiningAlgorithm::Sha256d => sha256d(header),
+        MiningAlgorithm::Scrypt => scrypt_pow_1024_1_1_256(header),
+        MiningAlgorithm::Other(_) => sha256d(header),
+    }
+}
+
 /// Convert difficulty to target bytes (256-bit big-endian)
-/// For pool mining, we typically use a simplified calculation
 pub fn difficulty_to_target(difficulty: f64) -> [u8; 32] {
-    // Bitcoin's difficulty 1 target
-    // 0x00000000FFFF0000000000000000000000000000000000000000000000000000
-    let diff1_target: [u8; 32] = [
-        0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00,
-    ];
+    difficulty_to_target_for_algorithm(difficulty, &MiningAlgorithm::Sha256d)
+}
 
-    if difficulty <= 0.0 {
-        return [0xFF; 32]; // Maximum target
+/// Convert pool difficulty to share target for a given PoW algorithm.
+/// Returns a 256-bit big-endian target.
+pub fn difficulty_to_target_for_algorithm(difficulty: f64, algorithm: &MiningAlgorithm) -> [u8; 32] {
+    // Difficulty 1 share target differs by algorithm family in many pools.
+    // - SHA256d (BTC/BCH): 0x00000000FFFF0000....
+    // - Scrypt (LTC/DOGE): 0x0000FFFF0000....
+    let diff1_target_be: [u8; 32] = match algorithm {
+        MiningAlgorithm::Scrypt => [
+            0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+        _ => [
+            0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ],
+    };
+
+    if !difficulty.is_finite() || difficulty <= 0.0 {
+        return [0xFF; 32];
     }
 
-    // target = diff1_target / difficulty
-    // For simplicity, we use floating point approximation
-    let mut target = [0u8; 32];
-    let scale = 1.0 / difficulty;
+    // Use fixed-point scaling to avoid float division on BigInt.
+    // scaled_d = round(difficulty * 1e8)
+    let scale: f64 = 100_000_000.0;
+    let scaled_d_u128 = (difficulty * scale).round().max(1.0) as u128;
+    let scaled_d = BigUint::from(scaled_d_u128);
 
-    // Convert diff1 target to a big integer concept and scale
-    // This is a simplified version - real implementation would use big integers
-    for i in 0..32 {
-        let scaled = (diff1_target[i] as f64) * scale;
-        target[i] = scaled.min(255.0) as u8;
+    let diff1 = BigUint::from_bytes_be(&diff1_target_be);
+    let numerator = diff1 * BigUint::from(scale as u128);
+    let target = numerator / scaled_d;
+
+    let mut out = [0u8; 32];
+    let bytes = target.to_bytes_be();
+    if bytes.len() >= 32 {
+        out.copy_from_slice(&bytes[bytes.len() - 32..]);
+    } else {
+        out[32 - bytes.len()..].copy_from_slice(&bytes);
     }
-
-    target
+    out
 }
 
 /// Check if hash meets target (hash <= target)
 pub fn meets_target(hash: &[u8; 32], target: &[u8; 32]) -> bool {
-    // Compare big-endian: hash should be <= target
-    for i in 0..32 {
-        if hash[i] < target[i] {
-            return true;
-        } else if hash[i] > target[i] {
-            return false;
-        }
-    }
-    true // Equal
+    // Mining compares little-endian integers. We compute target as big-endian,
+    // so reverse it for the same endianness as the hash bytes.
+    let hash_v = BigUint::from_bytes_le(hash);
+    let mut target_le = [0u8; 32];
+    target_le.copy_from_slice(target);
+    target_le.reverse();
+    let target_v = BigUint::from_bytes_le(&target_le);
+    hash_v <= target_v
 }
 
 /// Run the miner worker loop
@@ -115,6 +153,7 @@ pub async fn run_worker(
                 extranonce1,
                 extranonce2_size,
                 difficulty,
+                algorithm,
             }) => {
                 // Stop any previous mining and start a new epoch.
                 let my_epoch = epoch.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
@@ -133,6 +172,7 @@ pub async fn run_worker(
                     let result_tx = result_tx_clone.clone();
                     let metrics = Arc::clone(&metrics_clone);
                     let epoch = Arc::clone(&epoch);
+                    let algorithm = algorithm.clone();
 
                     tokio::task::spawn_blocking(move || {
                         mine_job(
@@ -140,6 +180,7 @@ pub async fn run_worker(
                             &extranonce1,
                             extranonce2_size,
                             difficulty,
+                            &algorithm,
                             epoch,
                             my_epoch,
                             result_tx,
@@ -167,6 +208,7 @@ fn mine_job(
     extranonce1: &str,
     extranonce2_size: usize,
     difficulty: f64,
+    algorithm: &MiningAlgorithm,
     epoch: Arc<AtomicU64>,
     my_epoch: u64,
     result_tx: mpsc::Sender<NonceFound>,
@@ -174,7 +216,7 @@ fn mine_job(
     nonce_start: u32,
     nonce_step: u32,
 ) {
-    let target = difficulty_to_target(difficulty);
+    let target = difficulty_to_target_for_algorithm(difficulty, algorithm);
 
     // Generate extranonce2 (incrementing counter)
     let mut extranonce2_counter: u64 = 0;
@@ -210,8 +252,8 @@ fn mine_job(
         // Assemble header (fast path). Merkle root is constant until extranonce2 changes.
         let header = job::assemble_header(&header_template, &merkle_root, nonce);
 
-        // Compute SHA256d
-        let hash = sha256d(&header);
+        // Compute PoW hash
+        let hash = hash_header(algorithm, &header);
         pending_hashes += 1;
 
         // Check if hash meets target
@@ -281,17 +323,18 @@ mod tests {
 
     #[test]
     fn test_meets_target() {
-        let hash = [0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let target = [0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        // little-endian numeric comparison
+        // hash = 1, target = 2
+        let mut hash = [0u8; 32];
+        hash[0] = 0x01;
+        let mut target = [0u8; 32];
+        // target big-endian = 2 => bytes_be = ...02
+        target[31] = 0x02;
         assert!(meets_target(&hash, &target));
 
-        let hash_higher = [0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                          0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        // hash = 3, target = 2
+        let mut hash_higher = [0u8; 32];
+        hash_higher[0] = 0x03;
         assert!(!meets_target(&hash_higher, &target));
     }
 }

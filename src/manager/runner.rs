@@ -1,7 +1,7 @@
 use super::handshake::connect_and_handshake;
 use super::session::{dispatch_job, handle_nonce_found, handle_pool_message};
 use super::{ManagerEvent, Metrics};
-use crate::config::Config;
+use crate::config::{Config, PoolStrategy};
 use crate::miner::{MinerCommand, NonceFound};
 use anyhow::Result;
 use std::sync::Arc;
@@ -10,6 +10,98 @@ use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
 use super::events::emit;
+
+struct PoolRuntime {
+    pool: crate::config::PoolConfig,
+    failures: u32,
+    cooldown_until: Option<tokio::time::Instant>,
+}
+
+impl PoolRuntime {
+    fn is_available(&self) -> bool {
+        match self.cooldown_until {
+            None => true,
+            Some(t) => tokio::time::Instant::now() >= t,
+        }
+    }
+
+    fn cooldown_remaining(&self) -> Option<std::time::Duration> {
+        self.cooldown_until
+            .and_then(|t| t.checked_duration_since(tokio::time::Instant::now()))
+    }
+}
+
+struct PoolPicker {
+    strategy: PoolStrategy,
+    schedule: Vec<usize>,
+    cursor: usize,
+    active_idx: Option<usize>,
+}
+
+impl PoolPicker {
+    fn new(strategy: PoolStrategy, pools: &[crate::config::PoolConfig]) -> Self {
+        let mut schedule = Vec::new();
+        match strategy {
+            PoolStrategy::Weighted => {
+                // Weighted round-robin schedule.
+                // Cap total slots to avoid pathological large weights.
+                let mut total_slots: usize = 0;
+                for (i, p) in pools.iter().enumerate() {
+                    let w = p.weight.max(1) as usize;
+                    total_slots = total_slots.saturating_add(w);
+                    if total_slots > 128 {
+                        break;
+                    }
+                    for _ in 0..w {
+                        schedule.push(i);
+                    }
+                }
+                if schedule.is_empty() {
+                    schedule.extend(0..pools.len());
+                }
+            }
+            PoolStrategy::Failover | PoolStrategy::RoundRobin => {
+                schedule.extend(0..pools.len());
+            }
+        }
+
+        if schedule.is_empty() {
+            schedule.push(0);
+        }
+
+        Self {
+            strategy,
+            schedule,
+            cursor: 0,
+            active_idx: None,
+        }
+    }
+
+    fn pick_next(&mut self, pools: &[PoolRuntime]) -> Option<usize> {
+        if pools.is_empty() {
+            return None;
+        }
+
+        if self.strategy == PoolStrategy::Failover {
+            if let Some(i) = self.active_idx {
+                if pools.get(i).map(|p| p.is_available()).unwrap_or(false) {
+                    return Some(i);
+                }
+            }
+        }
+
+        let tries = self.schedule.len().max(1);
+        for _ in 0..tries {
+            let idx = self.schedule[self.cursor % self.schedule.len()];
+            self.cursor = self.cursor.wrapping_add(1);
+            if pools.get(idx).map(|p| p.is_available()).unwrap_or(false) {
+                return Some(idx);
+            }
+        }
+
+        None
+    }
+}
 
 pub async fn run_with_config(
     config: Config,
@@ -31,19 +123,92 @@ pub async fn run_with_config(
     let mut backoff_ms: u64 = 500;
     let max_backoff_ms = config.reconnect_max_delay_ms.max(500);
 
+    let total_pools = config.pools.len().max(1);
+    let mut pool_runtimes: Vec<PoolRuntime> = config
+        .pools
+        .iter()
+        .cloned()
+        .map(|p| PoolRuntime {
+            pool: p,
+            failures: 0,
+            cooldown_until: None,
+        })
+        .collect();
+    let mut picker = PoolPicker::new(config.pool_strategy, &config.pools);
+
     loop {
         if *shutdown_rx.borrow() {
             emit(&ui_events, ManagerEvent::Log("Shutdown requested".to_string())).await;
             break;
         }
 
-        let session = connect_and_handshake(&config, Arc::clone(&metrics), &ui_events).await;
+        let Some(pool_idx) = picker.pick_next(&pool_runtimes) else {
+            // All pools are on cooldown. Sleep until the earliest cooldown expires.
+            let min_remaining = pool_runtimes
+                .iter()
+                .filter_map(|p| p.cooldown_remaining())
+                .min();
+
+            let sleep_for = min_remaining.unwrap_or_else(|| std::time::Duration::from_millis(500));
+            emit(
+                &ui_events,
+                ManagerEvent::Log(format!(
+                    "All pools are cooling down; retrying in {}s...",
+                    sleep_for.as_secs_f64()
+                )),
+            )
+            .await;
+            tokio::select! {
+                _ = tokio::time::sleep(sleep_for) => {}
+                _ = shutdown_rx.changed() => {}
+            }
+            continue;
+        };
+
+        let active_pool = pool_runtimes[pool_idx].pool.clone();
+        emit(
+            &ui_events,
+            ManagerEvent::ActivePool {
+                name: active_pool.name.clone(),
+                addr: active_pool.addr.clone(),
+                coin: active_pool.coin.symbol().to_string(),
+                algo: active_pool.algo.name().to_string(),
+                index: pool_idx + 1,
+                total: total_pools,
+            },
+        )
+        .await;
+
+        let session =
+            connect_and_handshake(&config, &active_pool, Arc::clone(&metrics), &ui_events).await;
         let (mut client, mut state, mut request_id, pending_job) = match session {
             Ok(v) => {
                 backoff_ms = 500;
+                pool_runtimes[pool_idx].failures = 0;
+                pool_runtimes[pool_idx].cooldown_until = None;
+                picker.active_idx = Some(pool_idx);
                 v
             }
             Err(e) => {
+                // Track failures and cooldown per pool.
+                pool_runtimes[pool_idx].failures = pool_runtimes[pool_idx].failures.saturating_add(1);
+                if pool_runtimes[pool_idx].failures >= config.pool_failures_before_cooldown {
+                    pool_runtimes[pool_idx].failures = 0;
+                    pool_runtimes[pool_idx].cooldown_until = Some(
+                        tokio::time::Instant::now()
+                            + std::time::Duration::from_secs(config.pool_failure_cooldown_secs.max(1)),
+                    );
+                    emit(
+                        &ui_events,
+                        ManagerEvent::Log(format!(
+                            "Pool {} entered cooldown for {}s",
+                            active_pool.name,
+                            config.pool_failure_cooldown_secs.max(1)
+                        )),
+                    )
+                    .await;
+                }
+
                 emit(&ui_events, ManagerEvent::Connected(false)).await;
                 emit(&ui_events, ManagerEvent::ProxyInfo(None)).await;
                 emit(&ui_events, ManagerEvent::CurrentJob(None)).await;
@@ -130,7 +295,7 @@ pub async fn run_with_config(
                     }
                 }
                 Some(nonce_found) = miner_rx.recv() => {
-                    handle_nonce_found(&nonce_found, &mut client, &mut request_id, &mut state, &config, &ui_events).await?;
+                    handle_nonce_found(&nonce_found, &mut client, &mut request_id, &mut state, &active_pool.user, &ui_events).await?;
                 }
             }
         }
