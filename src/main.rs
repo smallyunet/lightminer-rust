@@ -38,10 +38,24 @@ pub mod manager;
 pub mod miner;
 pub mod network;
 pub mod protocol;
+pub mod presets;
 pub mod ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::var("MINING_LIST_PRESETS").is_ok() {
+        println!("Embedded presets:");
+        for p in presets::embedded_presets() {
+            println!("- {}: {} (coin={}, algo={})", p.name, p.addr, p.coin, p.algo);
+            if let Some(note) = p.note {
+                println!("  note: {note}");
+            }
+        }
+        println!();
+        println!("Tip: Use MINING_PRESET=... or MINING_PRESET_FILE=... (JSON) to load presets.");
+        return Ok(());
+    }
+
     let config = config::Config::from_env();
 
     if config.use_tui {

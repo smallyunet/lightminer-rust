@@ -53,6 +53,40 @@ NO_TUI=1 cargo run
 MINING_POOL="stratum.pool.com:3333" cargo run
 ```
 
+### Presets (v0.0.8+)
+
+List embedded presets:
+
+```bash
+MINING_LIST_PRESETS=1 NO_TUI=1 cargo run
+```
+
+Use an embedded preset (when `MINING_POOLS` is unset):
+
+```bash
+MINING_PRESET="btc.ckpool" \
+MINING_USER="<btc-address>.worker" MINING_PASS="x" \
+cargo run
+```
+
+Load presets from a local JSON file (array of objects):
+
+```bash
+MINING_PRESET_FILE="./presets.json" \
+MINING_PRESET="my-btc,my-ltc" \
+MINING_USER="user.worker" MINING_PASS="x" \
+cargo run
+```
+
+Example `presets.json` entry:
+
+```json
+[
+    {"name":"my-btc","addr":"solo.ckpool.org:3333","coin":"btc","algo":"sha256d","weight":1},
+    {"name":"my-ltc","addr":"ltc-pool.example.com:3333","coin":"ltc","algo":"scrypt","weight":1}
+]
+```
+
 ### Multiple Pools (Failover / Rotation)
 
 Configure multiple pools with per-pool credentials/coin:
@@ -153,6 +187,9 @@ src/
 | `MINING_POOL` | Pool address (host:port) | `solo.ckpool.org:3333` |
 | `MINING_ALGO` | Single-pool algorithm: `sha256d`/`scrypt` | `sha256d` |
 | `MINING_POOLS` | Multi-pool list: `name@addr|user|pass|coin|weight|algo;...` | (unset → uses `MINING_POOL`) |
+| `MINING_PRESET` | Preset name(s), comma-separated (used only when `MINING_POOLS` is unset) | (unset) |
+| `MINING_PRESET_FILE` | Load extra presets from a JSON file (array of objects) | (unset) |
+| `MINING_LIST_PRESETS` | Print embedded preset list and exit | (unset) |
 | `MINING_POOL_STRATEGY` | Pool selection: `failover`/`round_robin`/`weighted` | `failover` |
 | `MINING_POOL_FAILURES_BEFORE_COOLDOWN` | Failures before putting a pool on cooldown | `3` |
 | `MINING_POOL_COOLDOWN_SECS` | Cooldown seconds for unhealthy pools | `30` |

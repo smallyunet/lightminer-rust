@@ -1,6 +1,8 @@
 use std::env;
 use std::str::FromStr;
 
+use crate::presets::{find_preset, parse_preset_list, PoolPreset};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Coin {
     Btc,
@@ -168,6 +170,10 @@ impl Config {
         let worker_name = env::var("MINING_USER").unwrap_or_else(|_| "lightminer.1".to_string());
         let worker_password = env::var("MINING_PASS").unwrap_or_else(|_| "x".to_string());
 
+        // Priority order:
+        // 1) MINING_POOLS (explicit)
+        // 2) MINING_PRESET / MINING_PRESET_FILE (presets)
+        // 3) MINING_POOL (+ MINING_ALGO) single-pool fallback
         let pools = parse_pools_env(&pool_addr, &worker_name, &worker_password);
         let (pool_addr, worker_name, worker_password) = pools
             .first()
@@ -319,20 +325,63 @@ fn parse_pools_env(default_addr: &str, default_user: &str, default_pass: &str) -
     }
 
     if pools.is_empty() {
-        let algo = MiningAlgorithm::from_env_default();
-        let coin = Coin::Btc;
-        pools.push(PoolConfig {
-            name: "pool1".to_string(),
-            addr: default_addr.to_string(),
-            user: default_user.to_string(),
-            pass: default_pass.to_string(),
-            coin,
-            algo,
-            weight: 1,
-        });
+        // Try presets if MINING_POOLS isn't specified.
+        if let Some(preset_pools) = parse_presets_env(default_user, default_pass) {
+            pools = preset_pools;
+        } else {
+            let algo = MiningAlgorithm::from_env_default();
+            let coin = Coin::Btc;
+            pools.push(PoolConfig {
+                name: "pool1".to_string(),
+                addr: default_addr.to_string(),
+                user: default_user.to_string(),
+                pass: default_pass.to_string(),
+                coin,
+                algo,
+                weight: 1,
+            });
+        }
     }
 
     pools
+}
+
+fn parse_presets_env(default_user: &str, default_pass: &str) -> Option<Vec<PoolConfig>> {
+    let preset_names = env::var("MINING_PRESET").ok();
+    let preset_file = env::var("MINING_PRESET_FILE").ok();
+
+    if preset_names.as_deref().unwrap_or("").trim().is_empty() && preset_file.is_none() {
+        return None;
+    }
+
+    let mut presets: Vec<PoolPreset> = Vec::new();
+
+    if let Some(path) = preset_file {
+        if let Ok(text) = std::fs::read_to_string(path.trim()) {
+            if let Ok(mut v) = serde_json::from_str::<Vec<PoolPreset>>(&text) {
+                presets.append(&mut v);
+            }
+        }
+    }
+
+    if let Some(names_raw) = preset_names {
+        for n in parse_preset_list(&names_raw) {
+            if let Some(p) = find_preset(&n) {
+                presets.push(p);
+            }
+        }
+    }
+
+    if presets.is_empty() {
+        return None;
+    }
+
+    Some(
+        presets
+            .iter()
+            .map(|p| p.to_pool_config(default_user, default_pass))
+            .collect(),
+    )
 }
 
 fn parse_bool_env(key: &str, default: bool) -> bool {
