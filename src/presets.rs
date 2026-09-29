@@ -49,6 +49,17 @@ pub fn embedded_presets() -> Vec<PoolPreset> {
                     .to_string(),
             ),
         },
+        PoolPreset {
+            name: "btc.btcpowlab".to_string(),
+            addr: "stratum.btcpowlab-pool.com:3333".to_string(),
+            coin: "btc".to_string(),
+            algo: "sha256d".to_string(),
+            weight: 1,
+            note: Some(
+                "BTC PoW Lab Hybrid Solo. Username requires a BTC address: <address>.worker"
+                    .to_string(),
+            ),
+        },
         // NOTE: These are example presets; users should override to their preferred pool.
         PoolPreset {
             name: "ltc.example".to_string(),
@@ -100,5 +111,13 @@ mod tests {
     #[test]
     fn test_find_preset_case_insensitive() {
         assert!(find_preset("BTC.CKPOOL").is_some());
+    }
+
+    #[test]
+    fn test_btcpowlab_preset() {
+        let preset = find_preset("BTC.BTCPOWLAB").expect("BTC PoW Lab preset should exist");
+        assert_eq!(preset.addr, "stratum.btcpowlab-pool.com:3333");
+        assert_eq!(preset.coin, "btc");
+        assert_eq!(preset.algo, "sha256d");
     }
 }
