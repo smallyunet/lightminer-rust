@@ -45,6 +45,8 @@ pub struct NonceFound {
     pub extranonce2: String,
     pub ntime: String,
     pub nonce: String,
+    /// Pool difficulty this nonce was checked against.
+    pub difficulty: f64,
 }
 
 /// Perform SHA256d (double SHA256) on input bytes
@@ -65,11 +67,11 @@ fn scrypt_pow_1024_1_1_256(header: &[u8; 80]) -> [u8; 32] {
     out
 }
 
-fn hash_header(algorithm: &MiningAlgorithm, header: &[u8; 80]) -> [u8; 32] {
+fn hash_header(algorithm: &MiningAlgorithm, header: &[u8; 80]) -> Option<[u8; 32]> {
     match algorithm {
-        MiningAlgorithm::Sha256d => sha256d(header),
-        MiningAlgorithm::Scrypt => scrypt_pow_1024_1_1_256(header),
-        MiningAlgorithm::Other(_) => sha256d(header),
+        MiningAlgorithm::Sha256d => Some(sha256d(header)),
+        MiningAlgorithm::Scrypt => Some(scrypt_pow_1024_1_1_256(header)),
+        MiningAlgorithm::Other(_) => None,
     }
 }
 
@@ -80,7 +82,10 @@ pub fn difficulty_to_target(difficulty: f64) -> [u8; 32] {
 
 /// Convert pool difficulty to share target for a given PoW algorithm.
 /// Returns a 256-bit big-endian target.
-pub fn difficulty_to_target_for_algorithm(difficulty: f64, algorithm: &MiningAlgorithm) -> [u8; 32] {
+pub fn difficulty_to_target_for_algorithm(
+    difficulty: f64,
+    algorithm: &MiningAlgorithm,
+) -> [u8; 32] {
     // Difficulty 1 share target differs by algorithm family in many pools.
     // - SHA256d (BTC/BCH): 0x00000000FFFF0000....
     // - Scrypt (LTC/DOGE): 0x0000FFFF0000....
@@ -216,6 +221,14 @@ fn mine_job(
     nonce_start: u32,
     nonce_step: u32,
 ) {
+    if !algorithm.is_supported() {
+        tracing::error!(
+            "Refusing to mine unsupported algorithm {} (supported: sha256d, scrypt)",
+            algorithm.name()
+        );
+        return;
+    }
+
     let target = difficulty_to_target_for_algorithm(difficulty, algorithm);
 
     // Generate extranonce2 (incrementing counter)
@@ -252,8 +265,14 @@ fn mine_job(
         // Assemble header (fast path). Merkle root is constant until extranonce2 changes.
         let header = job::assemble_header(&header_template, &merkle_root, nonce);
 
-        // Compute PoW hash
-        let hash = hash_header(algorithm, &header);
+        // Compute PoW hash. Unsupported algorithms already returned above.
+        let Some(hash) = hash_header(algorithm, &header) else {
+            tracing::error!(
+                "Refusing to mine unsupported algorithm {}",
+                algorithm.name()
+            );
+            return;
+        };
         pending_hashes += 1;
 
         // Check if hash meets target
@@ -265,6 +284,7 @@ fn mine_job(
                 extranonce2: extranonce2.clone(),
                 ntime: job.ntime.clone(),
                 nonce: format!("{:08x}", nonce),
+                difficulty,
             };
 
             // Send result to manager (blocking in sync context)
@@ -336,5 +356,13 @@ mod tests {
         let mut hash_higher = [0u8; 32];
         hash_higher[0] = 0x03;
         assert!(!meets_target(&hash_higher, &target));
+    }
+
+    #[test]
+    fn unsupported_algorithm_is_not_hashed_as_sha256d() {
+        let header = [0u8; 80];
+        assert!(hash_header(&MiningAlgorithm::Other("equihash".into()), &header).is_none());
+        assert!(hash_header(&MiningAlgorithm::Sha256d, &header).is_some());
+        assert!(hash_header(&MiningAlgorithm::Scrypt, &header).is_some());
     }
 }

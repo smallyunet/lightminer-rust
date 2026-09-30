@@ -139,9 +139,7 @@ fn snapshot_pools_status(pools: &[PoolRuntime]) -> Vec<PoolStatus> {
             coin: p.pool.coin.symbol().to_string(),
             algo: p.pool.algo.name().to_string(),
             disabled: p.disabled,
-            cooldown_secs_remaining: p
-                .cooldown_remaining()
-                .map(|d| d.as_secs().max(1)),
+            cooldown_secs_remaining: p.cooldown_remaining().map(|d| d.as_secs().max(1)),
             failures: p.failures,
         })
         .collect()
@@ -154,6 +152,46 @@ pub async fn run_with_config(
     mut command_rx: Option<mpsc::Receiver<ManagerCommand>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
+    let mut pool_runtimes: Vec<PoolRuntime> = config
+        .pools
+        .iter()
+        .cloned()
+        .map(|p| PoolRuntime {
+            pool: p,
+            failures: 0,
+            cooldown_until: None,
+            disabled: false,
+        })
+        .collect();
+
+    if pool_runtimes.is_empty() {
+        anyhow::bail!("No pools configured");
+    }
+
+    let mut unsupported = Vec::new();
+    for pool in &mut pool_runtimes {
+        if pool.pool.algo.is_supported() {
+            continue;
+        }
+        unsupported.push(format!("{} ({})", pool.pool.name, pool.pool.algo.name()));
+        pool.disabled = true;
+        emit(
+            &ui_events,
+            ManagerEvent::Log(format!(
+                "Disabled pool {}: unsupported algorithm '{}' (supported: sha256d, scrypt)",
+                pool.pool.name,
+                pool.pool.algo.name()
+            )),
+        )
+        .await;
+    }
+    if pool_runtimes.iter().all(|pool| pool.disabled) {
+        anyhow::bail!(
+            "No pool uses a supported algorithm (sha256d, scrypt): {}",
+            unsupported.join(", ")
+        );
+    }
+
     // Create channels for miner communication
     let (miner_tx, mut miner_rx) = mpsc::channel::<NonceFound>(32);
     let (job_tx, job_rx) = mpsc::channel::<MinerCommand>(32);
@@ -169,17 +207,6 @@ pub async fn run_with_config(
     let max_backoff_ms = config.reconnect_max_delay_ms.max(500);
 
     let total_pools = config.pools.len().max(1);
-    let mut pool_runtimes: Vec<PoolRuntime> = config
-        .pools
-        .iter()
-        .cloned()
-        .map(|p| PoolRuntime {
-            pool: p,
-            failures: 0,
-            cooldown_until: None,
-            disabled: false,
-        })
-        .collect();
     let mut picker = PoolPicker::new(config.pool_strategy, &config.pools);
 
     emit(
@@ -190,15 +217,26 @@ pub async fn run_with_config(
 
     // Manual override index set by UI commands.
     let mut manual_override: Option<usize> = None;
+    // `None` means log mode never sends commands. A closed channel must not
+    // make the session loop spin: `recv()` on a finished channel is instantly ready.
+    let mut commands_closed = command_rx.is_none();
 
     loop {
         if *shutdown_rx.borrow() {
-            emit(&ui_events, ManagerEvent::Log("Shutdown requested".to_string())).await;
+            emit(
+                &ui_events,
+                ManagerEvent::Log("Shutdown requested".to_string()),
+            )
+            .await;
             break;
         }
 
         let Some(pool_idx) = (if let Some(i) = manual_override.take() {
-            if pool_runtimes.get(i).map(|p| p.is_available()).unwrap_or(false) {
+            if pool_runtimes
+                .get(i)
+                .map(|p| p.is_available())
+                .unwrap_or(false)
+            {
                 Some(i)
             } else {
                 None
@@ -265,12 +303,15 @@ pub async fn run_with_config(
             }
             Err(e) => {
                 // Track failures and cooldown per pool.
-                pool_runtimes[pool_idx].failures = pool_runtimes[pool_idx].failures.saturating_add(1);
+                pool_runtimes[pool_idx].failures =
+                    pool_runtimes[pool_idx].failures.saturating_add(1);
                 if pool_runtimes[pool_idx].failures >= config.pool_failures_before_cooldown {
                     pool_runtimes[pool_idx].failures = 0;
                     pool_runtimes[pool_idx].cooldown_until = Some(
                         tokio::time::Instant::now()
-                            + std::time::Duration::from_secs(config.pool_failure_cooldown_secs.max(1)),
+                            + std::time::Duration::from_secs(
+                                config.pool_failure_cooldown_secs.max(1),
+                            ),
                     );
                     emit(
                         &ui_events,
@@ -336,9 +377,13 @@ pub async fn run_with_config(
 
             tokio::select! {
                 maybe_cmd = async {
-                    match command_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
-                        None => None,
+                    if commands_closed {
+                        std::future::pending().await
+                    } else {
+                        match command_rx.as_mut() {
+                            Some(rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
                     }
                 } => {
                     if let Some(cmd) = maybe_cmd {
@@ -381,6 +426,8 @@ pub async fn run_with_config(
                                 }
                             }
                         }
+                    } else {
+                        commands_closed = true;
                     }
                 }
                 shutdown_result = shutdown_rx.changed() => {

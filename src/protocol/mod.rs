@@ -85,11 +85,7 @@ impl Request {
 
     /// Create a mining.subscribe request
     pub fn subscribe(id: u64, agent: &str) -> Self {
-        Self::new(
-            id,
-            "mining.subscribe",
-            vec![serde_json::json!(agent)],
-        )
+        Self::new(id, "mining.subscribe", vec![serde_json::json!(agent)])
     }
 
     /// Create a mining.authorize request
@@ -133,7 +129,63 @@ impl Response {
 
     /// Check if authorize was successful (result should be true)
     pub fn is_authorized(&self) -> bool {
-        self.result.as_ref().map(|r| r.as_bool().unwrap_or(false)).unwrap_or(false)
+        self.result
+            .as_ref()
+            .map(|r| r.as_bool().unwrap_or(false))
+            .unwrap_or(false)
+    }
+
+    /// `mining.submit` is accepted only when the pool returns `result: true`
+    /// and no error. `result: false` with `error: null` is a rejection;
+    /// [`Response::is_success`] treats any present result as success, which
+    /// is correct for subscribe but not for shares.
+    pub fn share_accepted(&self) -> bool {
+        let error_clear = self.error.as_ref().map(|err| err.is_null()).unwrap_or(true);
+        error_clear && self.result.as_ref().and_then(|value| value.as_bool()) == Some(true)
+    }
+
+    /// Human-readable Stratum error, when the pool sent one.
+    ///
+    /// Pools typically use `[code, message, traceback]`. A null error means
+    /// the pool did not explain the failure.
+    pub fn error_reason(&self) -> Option<String> {
+        let err = self.error.as_ref()?;
+        if err.is_null() {
+            return None;
+        }
+        if let Some(text) = err.as_str() {
+            let text = text.trim();
+            if text.is_empty() {
+                return None;
+            }
+            return Some(text.to_string());
+        }
+        if let Some(parts) = err.as_array() {
+            let code = parts.first().and_then(json_scalar);
+            let message = parts
+                .get(1)
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|text| !text.is_empty());
+            return match (code, message) {
+                (Some(code), Some(message)) => Some(format!("{message} ({code})")),
+                (None, Some(message)) => Some(message.to_string()),
+                (Some(code), None) => Some(format!("error {code}")),
+                (None, None) => None,
+            };
+        }
+        Some(err.to_string())
+    }
+
+    /// Reason to show when a share was not accepted.
+    pub fn share_reject_reason(&self) -> String {
+        if let Some(reason) = self.error_reason() {
+            return reason;
+        }
+        if self.result.as_ref().and_then(|value| value.as_bool()) == Some(false) {
+            return "result=false".to_string();
+        }
+        "rejected".to_string()
     }
 
     /// Parse subscription result from mining.subscribe response
@@ -208,6 +260,29 @@ impl Notification {
     }
 }
 
+fn json_scalar(value: &Value) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    if let Some(text) = value.as_str() {
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        return Some(text.to_string());
+    }
+    if let Some(number) = value.as_i64() {
+        return Some(number.to_string());
+    }
+    if let Some(number) = value.as_u64() {
+        return Some(number.to_string());
+    }
+    if let Some(number) = value.as_f64() {
+        return Some(number.to_string());
+    }
+    None
+}
+
 /// Try to parse a raw JSON line as either Response or Notification
 pub fn parse_message(json_line: &str) -> Result<MessageType, serde_json::Error> {
     // If it has a "method" field, it's a Notification; otherwise it's a Response.
@@ -266,7 +341,7 @@ mod tests {
         let resp: Response = serde_json::from_str(json).unwrap();
         assert_eq!(resp.id, Some(1));
         assert!(resp.is_success());
-        
+
         let sub = resp.parse_subscription().unwrap();
         assert_eq!(sub.extranonce1, "f0002000");
         assert_eq!(sub.extranonce2_size, 4);
@@ -299,7 +374,7 @@ mod tests {
         let json = r#"{"method":"mining.notify","params":["job123","0000000000000000000abc","01000000010000","ffffffff","[]","20000000","1d00ffff","5f5e1000",true]}"#;
         let notif: Notification = serde_json::from_str(json).unwrap();
         assert_eq!(notif.method, "mining.notify");
-        
+
         let job = notif.parse_job().unwrap();
         assert_eq!(job.job_id, "job123");
         assert!(job.clean_jobs);
@@ -329,5 +404,51 @@ mod tests {
             MessageType::Notification(n) => assert_eq!(n.method, "mining.set_difficulty"),
             _ => panic!("Expected Notification"),
         }
+    }
+
+    #[test]
+    fn integer_difficulty_parses() {
+        let json = r#"{"method":"mining.set_difficulty","params":[512]}"#;
+        let notif: Notification = serde_json::from_str(json).unwrap();
+        assert_eq!(notif.parse_difficulty(), Some(512.0));
+    }
+
+    #[test]
+    fn share_accepted_requires_true_result() {
+        let accepted: Response =
+            serde_json::from_str(r#"{"id":3,"result":true,"error":null}"#).unwrap();
+        assert!(accepted.share_accepted());
+
+        // is_success is true here because a result value is present, but the
+        // share itself was rejected.
+        let rejected: Response =
+            serde_json::from_str(r#"{"id":3,"result":false,"error":null}"#).unwrap();
+        assert!(rejected.is_success());
+        assert!(!rejected.share_accepted());
+        assert_eq!(rejected.share_reject_reason(), "result=false");
+    }
+
+    #[test]
+    fn share_reject_reason_uses_stratum_error_array() {
+        let resp: Response =
+            serde_json::from_str(r#"{"id":3,"result":null,"error":[23,"Low difficulty",null]}"#)
+                .unwrap();
+        assert!(!resp.share_accepted());
+        assert_eq!(resp.error_reason().as_deref(), Some("Low difficulty (23)"));
+        assert_eq!(resp.share_reject_reason(), "Low difficulty (23)");
+    }
+
+    #[test]
+    fn share_reject_reason_uses_string_error() {
+        let resp: Response =
+            serde_json::from_str(r#"{"id":3,"result":false,"error":"stale"}"#).unwrap();
+        assert_eq!(resp.error_reason().as_deref(), Some("stale"));
+    }
+
+    #[test]
+    fn error_code_without_message() {
+        let resp: Response =
+            serde_json::from_str(r#"{"id":3,"result":false,"error":[21,null,null]}"#).unwrap();
+        assert_eq!(resp.error_reason().as_deref(), Some("error 21"));
     }
 }

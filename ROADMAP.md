@@ -59,3 +59,25 @@
 - [x] **Reconnect**: Idle timeout reconnect when the TCP session stalls (`MINING_IDLE_TIMEOUT_SECS`).
 - [x] **Config**: Add handshake timeout (`MINING_HANDSHAKE_TIMEOUT_MS`).
 - [x] **TUI**: Show authorization status (Auth: OK/FAIL/-).
+
+## Release v0.0.6: Multi-pool ✅
+**Goal:** Keep mining when one pool fails, and choose pools by policy.
+- [x] **Config**: `MINING_POOLS` with per-pool coin, weight, and algorithm.
+- [x] **Strategy**: Failover, round-robin, and weighted selection, plus failure cooldown.
+
+## Release v0.0.7: Pool controls in the TUI ✅
+**Goal:** Switch or disable pools without restarting.
+- [x] **TUI**: Next/previous pool and disable/enable the active pool.
+
+## Release v0.0.8: Presets ✅
+**Goal:** Start from a named pool instead of a raw address string.
+- [x] **Presets**: Embedded presets plus a local JSON preset file.
+
+## Release v0.0.9: Share correctness ✅
+**Goal:** Submit only work that still matches what the pool is asking for, and show why a share was rejected.
+- [x] **Difficulty**: Apply `mining.set_difficulty` to the in-flight job immediately.
+- [x] **Stale work**: Drop nonces whose job id is no longer current, or whose difficulty is below the pool's current difficulty.
+- [x] **Reject reason**: Record the pool's Stratum error (`result: false` included) in the log and the shares panel.
+- [x] **Algorithms**: Refuse unknown algorithms instead of hashing them as SHA256d.
+- [x] **Session loop**: Log mode waits for pool traffic instead of spinning when no UI command channel is attached.
+- [x] **Tests**: Unit coverage for the submit policy, plus an integration test against a local Stratum pool.

@@ -5,6 +5,7 @@ mod metrics;
 mod runner;
 mod session;
 mod state;
+mod submit;
 
 pub use commands::ManagerCommand;
 pub use events::ManagerEvent;

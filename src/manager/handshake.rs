@@ -16,6 +16,14 @@ pub(crate) async fn connect_and_handshake(
     metrics: Arc<Metrics>,
     ui_events: &Option<mpsc::Sender<ManagerEvent>>,
 ) -> Result<(Client, ManagerState, u64, Option<Job>)> {
+    if !pool.algo.is_supported() {
+        anyhow::bail!(
+            "Pool {} uses unsupported algorithm '{}' (supported: sha256d, scrypt)",
+            pool.name,
+            pool.algo.name()
+        );
+    }
+
     emit(ui_events, ManagerEvent::Connected(false)).await;
     emit(
         ui_events,
@@ -87,8 +95,11 @@ pub(crate) async fn connect_and_handshake(
                             sub.extranonce1, sub.extranonce2_size
                         );
                         state.subscription = Some(sub);
-                        emit(ui_events, ManagerEvent::Log("Subscribed successfully".to_string()))
-                            .await;
+                        emit(
+                            ui_events,
+                            ManagerEvent::Log("Subscribed successfully".to_string()),
+                        )
+                        .await;
                     } else {
                         anyhow::bail!("Subscribe failed: {:?}", resp.error);
                     }

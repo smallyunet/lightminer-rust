@@ -29,7 +29,9 @@ pub enum ManagerEvent {
     Difficulty(f64),
     CurrentJob(Option<String>),
     ShareAccepted,
-    ShareRejected,
+    ShareRejected {
+        reason: String,
+    },
 }
 
 pub(crate) async fn emit(ui_events: &Option<mpsc::Sender<ManagerEvent>>, event: ManagerEvent) {

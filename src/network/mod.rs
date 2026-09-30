@@ -90,7 +90,7 @@ impl Client {
     pub async fn connect_with_proxy_info(addr: &str) -> Result<(Self, Option<String>)> {
         info!("Connecting to {}...", addr);
 
-        let proxy_cfg = proxy::detect_proxy();
+        let proxy_cfg = proxy::detect_proxy_for(addr);
         let (stream, proxy_display) = match proxy_cfg {
             Some(cfg) => {
                 let proxy_str = cfg.display();
@@ -125,19 +125,23 @@ impl Client {
             .write_all(json_payload.as_bytes())
             .await
             .context("Failed to write to socket")?;
-        
+
         // Stratum requires newline delimiter
         self.writer
             .write_u8(b'\n')
             .await
             .context("Failed to write newline")?;
-            
+
         Ok(())
     }
 
     /// Wait for the next message (line) from the server
     pub async fn next_message(&mut self) -> Result<Option<String>> {
-        let line = self.reader.next_line().await.context("Failed to read line")?;
+        let line = self
+            .reader
+            .next_line()
+            .await
+            .context("Failed to read line")?;
         if let Some(ref l) = line {
             debug!("Received: {}", l);
         }
@@ -164,12 +168,10 @@ async fn connect_via_socks5(cfg: &proxy::ProxyConfig, addr: &str) -> Result<DynS
                 .context("Failed to connect via SOCKS5 proxy")?
                 .into_inner()
         }
-        _ => {
-            Socks5Stream::connect(proxy_addr.as_str(), addr)
-                .await
-                .context("Failed to connect via SOCKS5 proxy")?
-                .into_inner()
-        }
+        _ => Socks5Stream::connect(proxy_addr.as_str(), addr)
+            .await
+            .context("Failed to connect via SOCKS5 proxy")?
+            .into_inner(),
     };
 
     Ok(Box::new(stream) as DynStream)
@@ -184,9 +186,8 @@ async fn connect_via_http_connect(cfg: &proxy::ProxyConfig, addr: &str) -> Resul
         .with_context(|| format!("Failed to connect to HTTP proxy {}", proxy_addr))?;
 
     // Minimal HTTP CONNECT tunnel.
-    let mut req = format!(
-        "CONNECT {addr} HTTP/1.1\r\nHost: {addr}\r\nProxy-Connection: Keep-Alive\r\n"
-    );
+    let mut req =
+        format!("CONNECT {addr} HTTP/1.1\r\nHost: {addr}\r\nProxy-Connection: Keep-Alive\r\n");
 
     // Basic auth if provided.
     if let (Some(user), Some(pass)) = (&cfg.username, &cfg.password) {
@@ -203,7 +204,10 @@ async fn connect_via_http_connect(cfg: &proxy::ProxyConfig, addr: &str) -> Resul
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let header_end = loop {
         let mut chunk = [0u8; 512];
-        let n = tcp.read(&mut chunk).await.context("Failed to read CONNECT response")?;
+        let n = tcp
+            .read(&mut chunk)
+            .await
+            .context("Failed to read CONNECT response")?;
         if n == 0 {
             anyhow::bail!("HTTP proxy closed connection during CONNECT");
         }
@@ -216,8 +220,7 @@ async fn connect_via_http_connect(cfg: &proxy::ProxyConfig, addr: &str) -> Resul
         }
     };
 
-    let status_line = first_status_line(&buf[..header_end])
-        .unwrap_or_else(|| "".to_string());
+    let status_line = first_status_line(&buf[..header_end]).unwrap_or_else(|| "".to_string());
     let status_code = parse_http_status_code(&status_line).unwrap_or(0);
     if status_code != 200 {
         anyhow::bail!("HTTP CONNECT failed: {status_line}");
@@ -229,8 +232,7 @@ async fn connect_via_http_connect(cfg: &proxy::ProxyConfig, addr: &str) -> Resul
 }
 
 fn find_double_crlf(buf: &[u8]) -> Option<usize> {
-    buf.windows(4)
-        .position(|w| w == b"\r\n\r\n")
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
 fn first_status_line(header: &[u8]) -> Option<String> {

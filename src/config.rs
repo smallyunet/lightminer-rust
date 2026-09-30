@@ -76,6 +76,14 @@ impl MiningAlgorithm {
             Err(_) => MiningAlgorithm::Sha256d,
         }
     }
+
+    /// Algorithms this miner can actually hash.
+    ///
+    /// Unknown names stay on the enum for display, but sessions must refuse
+    /// them instead of silently hashing SHA256d.
+    pub fn is_supported(&self) -> bool {
+        matches!(self, MiningAlgorithm::Sha256d | MiningAlgorithm::Scrypt)
+    }
 }
 
 impl FromStr for MiningAlgorithm {
@@ -166,7 +174,8 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
-        let pool_addr = env::var("MINING_POOL").unwrap_or_else(|_| "solo.ckpool.org:3333".to_string());
+        let pool_addr =
+            env::var("MINING_POOL").unwrap_or_else(|_| "solo.ckpool.org:3333".to_string());
         let worker_name = env::var("MINING_USER").unwrap_or_else(|_| "lightminer.1".to_string());
         let worker_password = env::var("MINING_PASS").unwrap_or_else(|_| "x".to_string());
 

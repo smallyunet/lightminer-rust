@@ -110,8 +110,8 @@ fn apply_manager_event(state: &mut AppState, event: ManagerEvent) {
         ManagerEvent::ShareAccepted => {
             // Metrics owns the canonical counters.
         }
-        ManagerEvent::ShareRejected => {
-            // Metrics owns the canonical counters.
+        ManagerEvent::ShareRejected { reason } => {
+            state.last_reject_reason = Some(reason);
         }
     }
 }
@@ -144,12 +144,12 @@ pub fn draw(frame: &mut Frame, app_state: &AppState) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Length(9),  // Header & Status
-            Constraint::Length(7),  // Pools
-            Constraint::Length(5),  // Hashrate
-            Constraint::Length(5),  // Shares
-            Constraint::Min(10),    // Logs
-            Constraint::Length(3),  // Footer
+            Constraint::Length(9), // Header & Status
+            Constraint::Length(7), // Pools
+            Constraint::Length(5), // Hashrate
+            Constraint::Length(6), // Shares
+            Constraint::Min(10),   // Logs
+            Constraint::Length(3), // Footer
         ])
         .split(frame.area());
 
@@ -195,7 +195,9 @@ fn draw_pools(frame: &mut Frame, area: Rect, app_state: &AppState) {
             }
 
             let style = if is_active {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else if p.disabled {
                 Style::default().fg(Color::DarkGray)
             } else if p.cooldown_secs_remaining.is_some() {
@@ -237,12 +239,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
     };
 
     let lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "╔═══════════════════════════════════════════════════════════╗",
-                Style::default().fg(Color::Cyan),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "╔═══════════════════════════════════════════════════════════╗",
+            Style::default().fg(Color::Cyan),
+        )]),
         Line::from(vec![
             Span::styled("║ ", Style::default().fg(Color::Cyan)),
             Span::styled(
@@ -254,12 +254,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
             Span::raw("                                        "),
             Span::styled("║", Style::default().fg(Color::Cyan)),
         ]),
-        Line::from(vec![
-            Span::styled(
-                "╚═══════════════════════════════════════════════════════════╝",
-                Style::default().fg(Color::Cyan),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "╚═══════════════════════════════════════════════════════════╝",
+            Style::default().fg(Color::Cyan),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::raw("  Pool: "),
@@ -283,10 +281,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
         Line::from(vec![
             Span::raw("  Proxy: "),
             Span::styled(
-                app_state
-                    .proxy
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string()),
+                app_state.proxy.clone().unwrap_or_else(|| "-".to_string()),
                 Style::default().fg(Color::Gray),
             ),
         ]),
@@ -304,7 +299,10 @@ fn draw_header(frame: &mut Frame, area: Rect, app_state: &AppState) {
         Line::from(vec![
             Span::raw("  Job: "),
             Span::styled(
-                app_state.current_job.clone().unwrap_or_else(|| "-".to_string()),
+                app_state
+                    .current_job
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string()),
                 Style::default().fg(Color::Yellow),
             ),
         ]),
@@ -361,10 +359,7 @@ fn draw_hashrate(frame: &mut Frame, area: Rect, app_state: &AppState) {
         ]),
         Line::from(vec![
             Span::raw("  Total Hashes: "),
-            Span::styled(
-                format!("{}", hashes),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(format!("{}", hashes), Style::default().fg(Color::White)),
         ]),
     ];
 
@@ -401,9 +396,13 @@ fn draw_shares(frame: &mut Frame, area: Rect, app_state: &AppState) {
                 Style::default().fg(Color::Red),
             ),
             Span::raw("    Ratio: "),
+            Span::styled(format!("{:.1}%", ratio), Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Last reject: "),
             Span::styled(
-                format!("{:.1}%", ratio),
-                Style::default().fg(Color::Cyan),
+                app_state.last_reject_reason.as_deref().unwrap_or("-"),
+                Style::default().fg(Color::Red),
             ),
         ]),
     ];
@@ -424,7 +423,11 @@ fn draw_logs(frame: &mut Frame, area: Rect, app_state: &AppState) {
         .rev()
         .take(20)
         .map(|log| {
-            let style = if log.contains("error") || log.contains("Error") {
+            let style = if log.contains("error")
+                || log.contains("Error")
+                || log.contains("rejected")
+                || log.contains("Dropped share")
+            {
                 Style::default().fg(Color::Red)
             } else if log.contains("accepted") || log.contains("Found") {
                 Style::default().fg(Color::Green)
@@ -443,18 +446,41 @@ fn draw_logs(frame: &mut Frame, area: Rect, app_state: &AppState) {
 
 fn draw_footer(frame: &mut Frame, area: Rect) {
     let text = Line::from(vec![
-        Span::styled(" [Q] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [Q] ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("Quit  "),
-        Span::styled(" [C] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [C] ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("Clear Logs  "),
-        Span::styled(" [p/P] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [p/P] ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("Switch Pool  "),
-        Span::styled(" [D] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " [D] ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("Disable/Enable Pool  "),
     ]);
 
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(Color::DarkGray)));
+    let paragraph = Paragraph::new(text).block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     frame.render_widget(paragraph, area);
 }
 
@@ -526,4 +552,24 @@ pub async fn run_ui(
 
     restore_terminal(&mut terminal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn share_reject_reason_is_kept_for_the_dashboard() {
+        let mut state = AppState::default();
+        apply_manager_event(
+            &mut state,
+            ManagerEvent::ShareRejected {
+                reason: "Low difficulty (23)".to_string(),
+            },
+        );
+        assert_eq!(
+            state.last_reject_reason.as_deref(),
+            Some("Low difficulty (23)")
+        );
+    }
 }

@@ -11,7 +11,7 @@ A lightweight CPU miner written in Rust with Stratum V1 protocol support and a p
 
 - 🔗 **Stratum V1 Protocol** - Full support for `mining.subscribe`, `mining.authorize`, and `mining.submit`
 - ⚡ **SHA256d Mining** - Standard double-SHA256 hashing algorithm
-- 📊 **Real-time Metrics** - Track hashrate, accepted/rejected shares
+- 📊 **Real-time Metrics** - Track hashrate, accepted/rejected shares, and the pool's reject reason
 - 🖥️ **Professional TUI** - Beautiful terminal interface built with ratatui
 - 📝 **Dual Mode** - TUI or traditional log output
 
@@ -170,7 +170,12 @@ MINING_PROXY="socks5://127.0.0.1:7890" cargo run
 
 # HTTP proxy (uses HTTP CONNECT tunnel)
 MINING_PROXY="http://127.0.0.1:7890" cargo run
+
+# Force a direct connection (skip env and system proxy detection)
+MINING_PROXY="off" cargo run
 ```
+
+Connections to `localhost`, `127.0.0.1`, and `::1` skip auto-detected proxies. An explicit `MINING_PROXY` URL still applies to those addresses.
 
 ## Architecture
 
@@ -209,7 +214,7 @@ src/
 | `MINING_USER` | Worker name / username | `lightminer.1` |
 | `MINING_PASS` | Worker password | `x` |
 | `MINING_AGENT` | Stratum `mining.subscribe` agent string | `LightMiner-Rust/<crate version>` |
-| `MINING_PROXY` | Proxy URL override (`socks5://` or `http://`) | (auto-detect) |
+| `MINING_PROXY` | Proxy URL override (`socks5://` or `http://`). `off` forces a direct connection | (auto-detect) |
 | `MINING_RECONNECT` | Auto-reconnect on disconnect (`true/false`) | `true` |
 | `MINING_RECONNECT_MAX_DELAY_MS` | Max reconnect backoff delay (ms) | `30000` |
 | `MINING_HANDSHAKE_TIMEOUT_MS` | Handshake timeout waiting for `mining.subscribe` response (ms) | `10000` |
@@ -249,6 +254,7 @@ See [ROADMAP.md](ROADMAP.md) for the complete development roadmap.
 - ✅ Phase 2: Mining Logic
 - ✅ Phase 3: Share Submission
 - ✅ Phase 4: TUI Interface
+- ✅ v0.0.9: Shares follow the current job and difficulty, and pool reject reasons are shown
 
 ## License
 

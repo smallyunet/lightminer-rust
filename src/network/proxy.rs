@@ -29,19 +29,36 @@ impl ProxyConfig {
     }
 }
 
-pub fn detect_proxy() -> Option<ProxyConfig> {
-    // 1) Explicit override for this app
+/// Resolve the proxy for a specific pool address.
+///
+/// `MINING_PROXY=off` (also `none`, `direct`, `-`) forces a direct connection.
+/// Loopback targets skip auto-detected proxies so a system proxy cannot
+/// intercept connections to a local pool.
+pub fn detect_proxy_for(target_addr: &str) -> Option<ProxyConfig> {
     if let Some(p) = env_first(&["MINING_PROXY"]) {
+        if proxy_directive_disables(&p) {
+            return None;
+        }
         if let Ok(cfg) = parse_proxy_url(&p, "MINING_PROXY") {
             return Some(cfg);
         }
     }
 
-    // 2) Standard proxy env vars
+    if is_loopback_target(target_addr) {
+        return None;
+    }
+
+    // Standard proxy env vars
     for (keys, source) in [
         (&["ALL_PROXY", "all_proxy"][..], "ALL_PROXY"),
-        (&["SOCKS5_PROXY", "socks5_proxy", "SOCKS_PROXY", "socks_proxy"][..], "SOCKS_PROXY"),
-        (&["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"][..], "HTTP_PROXY"),
+        (
+            &["SOCKS5_PROXY", "socks5_proxy", "SOCKS_PROXY", "socks_proxy"][..],
+            "SOCKS_PROXY",
+        ),
+        (
+            &["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"][..],
+            "HTTP_PROXY",
+        ),
     ] {
         if let Some(p) = env_first(keys) {
             if let Ok(mut cfg) = parse_proxy_url(&p, source) {
@@ -51,7 +68,7 @@ pub fn detect_proxy() -> Option<ProxyConfig> {
         }
     }
 
-    // 3) macOS system proxy
+    // macOS system proxy
     #[cfg(target_os = "macos")]
     {
         if let Ok(Some(cfg)) = detect_macos_scutil_proxy() {
@@ -60,6 +77,23 @@ pub fn detect_proxy() -> Option<ProxyConfig> {
     }
 
     None
+}
+
+fn proxy_directive_disables(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "off" | "none" | "direct" | "0" | "-"
+    )
+}
+
+fn is_loopback_target(addr: &str) -> bool {
+    let host = if let Some(rest) = addr.strip_prefix('[') {
+        rest.split_once(']').map(|(host, _)| host).unwrap_or(rest)
+    } else {
+        addr.rsplit_once(':').map(|(host, _)| host).unwrap_or(addr)
+    };
+    let host = host.trim();
+    host.eq_ignore_ascii_case("localhost") || host == "::1" || host.starts_with("127.")
 }
 
 fn env_first(keys: &[&str]) -> Option<String> {
@@ -89,10 +123,7 @@ fn parse_proxy_url(input: &str, source: &'static str) -> Result<ProxyConfig> {
         other => anyhow::bail!("Unsupported proxy scheme: {other}"),
     };
 
-    let host = url
-        .host_str()
-        .context("Proxy host missing")?
-        .to_string();
+    let host = url.host_str().context("Proxy host missing")?.to_string();
     let port = url.port().unwrap_or_else(|| match kind {
         ProxyKind::Socks5 => 1080,
         ProxyKind::Http => 8080,
@@ -196,4 +227,28 @@ fn detect_macos_scutil_proxy() -> Result<Option<ProxyConfig>> {
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_proxy_directives() {
+        assert!(proxy_directive_disables("off"));
+        assert!(proxy_directive_disables(" NONE "));
+        assert!(proxy_directive_disables("direct"));
+        assert!(proxy_directive_disables("0"));
+        assert!(proxy_directive_disables("-"));
+        assert!(!proxy_directive_disables("socks5://127.0.0.1:7890"));
+    }
+
+    #[test]
+    fn loopback_targets_skip_auto_proxy() {
+        assert!(is_loopback_target("127.0.0.1:3333"));
+        assert!(is_loopback_target("localhost:3333"));
+        assert!(is_loopback_target("[::1]:3333"));
+        assert!(!is_loopback_target("solo.ckpool.org:3333"));
+        assert!(!is_loopback_target(""));
+    }
 }
