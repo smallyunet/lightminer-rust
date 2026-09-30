@@ -69,6 +69,19 @@ MINING_USER="<btc-address>.worker" MINING_PASS="x" \
 cargo run
 ```
 
+BTC PoW Lab is also available as an embedded preset for Bitcoin SHA256d mining:
+
+```bash
+MINING_PRESET="btc.btcpowlab" \
+MINING_USER="<btc-address>.worker" MINING_PASS="x" \
+cargo run
+```
+
+BTC PoW Lab uses a Hybrid Solo reward model. Miners can inspect the
+[reward model](https://btcpowlab-pool.com/en/model) and
+[public proof](https://btcpowlab-pool.com/en/proof) before connecting. Mining
+outcomes are probabilistic and no block reward is guaranteed.
+
 Load presets from a local JSON file (array of objects):
 
 ```bash
